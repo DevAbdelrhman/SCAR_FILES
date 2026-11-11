@@ -214,6 +214,51 @@ app.post('/api/user/auth/logout', requireUser, requireCsrf, (req, res, next) => 
   });
 });
 
+const passwordChangeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: 'draft-7', legacyHeaders: false });
+app.post('/api/user/auth/change-password', passwordChangeLimiter, requireUser, requireCsrf, async (req, res, next) => {
+  try {
+    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+    if (!currentPassword || !newPassword || newPassword.length < 10 || Buffer.byteLength(newPassword, 'utf8') > 72) {
+      return res.status(400).json({ error: 'Enter your current password and a new password of at least 10 characters.' });
+    }
+    const account = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!await bcrypt.compare(currentPassword, account.password_hash)) return res.status( currentPassword ? 403 : 400).json({ error: 'Your current password is incorrect.' });
+    const hash = await bcrypt.hash(newPassword, 12);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.user.id);
+    req.session.regenerate(async error => {
+      if (error) return next(error);
+      req.session.userId = req.user.id;
+      req.session.csrfToken = await csrfToken();
+      req.session.save(saveError => {
+        if (saveError) return next(saveError);
+        res.set('Cache-Control', 'no-store').json({ success: true, csrfToken: req.session.csrfToken });
+      });
+    });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/user/auth/account', requireUser, requireCsrf, async (req, res, next) => {
+  try {
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const account = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!password || !await bcrypt.compare(password, account.password_hash)) return res.status(403).json({ error: 'Password confirmation failed.' });
+    const owned = db.prepare('SELECT storage_path, id FROM files WHERE user_id = ?').all(req.user.id);
+    const removeAccount = db.transaction(() => db.prepare('DELETE FROM users WHERE id = ?').run(req.user.id));
+    removeAccount();
+    for (const file of owned) {
+      const row = { storage_path: file.storage_path };
+      const fullPath = safeStoragePath(row);
+      if (fullPath) fs.rmSync(fullPath, { force: true });
+    }
+    req.session.destroy(error => {
+      if (error) return next(error);
+      res.clearCookie('scar.files.sid', { httpOnly: true, secure: isProduction, sameSite: 'lax', path: '/' });
+      res.status(204).end();
+    });
+  } catch (error) { next(error); }
+});
+
 app.get('/api/user/dashboard', requireUser, (req, res) => {
   const stats = db.prepare('SELECT COUNT(*) AS totalFiles, COALESCE(SUM(file_size), 0) AS storageUsed FROM files WHERE user_id = ?').get(req.user.id);
   const recent = db.prepare('SELECT id, original_name AS originalName, extension, file_size AS fileSize, uploaded_at AS uploadedAt FROM files WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT 5').all(req.user.id);
@@ -269,6 +314,22 @@ app.patch('/api/admin/users/:id/status', requireAdmin, requireCsrf, (req, res) =
   const result = db.prepare('UPDATE users SET status = ? WHERE id = ?').run(req.body.status, id);
   if (!result.changes) return res.status(404).json({ error: 'User not found.' });
   res.json({ success: true });
+});
+
+app.delete('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user id.' });
+  try {
+    const owned = db.prepare('SELECT storage_path FROM files WHERE user_id = ?').all(id);
+    const removeAccount = db.transaction(() => db.prepare('DELETE FROM users WHERE id = ?').run(id));
+    const result = removeAccount();
+    if (!result.changes) return res.status(404).json({ error: 'User not found.' });
+    for (const file of owned) {
+      const fullPath = safeStoragePath({ storage_path: file.storage_path });
+      if (fullPath) fs.rmSync(fullPath, { force: true });
+    }
+    res.status(204).end();
+  } catch (error) { next(error); }
 });
 
 function readStats() {
