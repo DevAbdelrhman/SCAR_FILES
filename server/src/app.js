@@ -306,9 +306,13 @@ app.delete('/api/user/files/:id', requireUser, requireCsrf, (req, res, next) => 
 });
 
 app.get('/api/admin/users', requireAdmin, (req, res) => {
-  const users = db.prepare(`SELECT u.id, u.username, u.email, u.status, u.created_at AS createdAt,
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : '';
+  const base = `SELECT u.id, u.username, u.email, u.status, u.created_at AS createdAt,
     COUNT(f.id) AS totalFiles, COALESCE(SUM(f.file_size), 0) AS storageUsed
-    FROM users u LEFT JOIN files f ON f.user_id = u.id GROUP BY u.id ORDER BY u.created_at DESC LIMIT 500`).all();
+    FROM users u LEFT JOIN files f ON f.user_id = u.id`;
+  const users = q
+    ? db.prepare(base + ' WHERE instr(lower(u.username), lower(?)) > 0 OR instr(lower(u.email), lower(?)) > 0 GROUP BY u.id ORDER BY u.created_at DESC LIMIT 500').all(q, q)
+    : db.prepare(base + ' GROUP BY u.id ORDER BY u.created_at DESC LIMIT 500').all();
   res.set('Cache-Control', 'no-store').json({ users });
 });
 
