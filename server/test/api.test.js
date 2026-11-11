@@ -154,4 +154,26 @@ test('user registration, private workspace, ownership isolation, and admin moder
   await second.get('/api/user/auth/me').expect(401);
   await second.post('/api/user/auth/login').set('X-CSRF-Token', (await second.get('/api/auth/csrf')).body.csrfToken)
     .send({ identity: 'anotheruser', password: 'long-secure-pass-2' }).expect(403);
+
+  const firstToken = (await first.get('/api/auth/csrf')).body.csrfToken;
+  await first.post('/api/user/auth/change-password').set('X-CSRF-Token', firstToken)
+    .send({ currentPassword: 'wrong-password', newPassword: 'new-secure-password-3' }).expect(403);
+  const changed = await first.post('/api/user/auth/change-password').set('X-CSRF-Token', firstToken)
+    .send({ currentPassword: 'long-secure-pass-1', newPassword: 'new-secure-password-3' }).expect(200);
+  assert.equal(typeof changed.body.csrfToken, 'string');
+  await first.post('/api/user/auth/login').set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
+    .send({ identity: 'privateuser', password: 'long-secure-pass-1' }).expect(401);
+  await first.post('/api/user/auth/login').set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
+    .send({ identity: 'privateuser', password: 'new-secure-password-3' }).expect(200);
+
+  await first.delete('/api/user/auth/account').set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
+    .send({ password: 'incorrect-password' }).expect(403);
+  await first.delete('/api/user/auth/account').set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
+    .send({ password: 'new-secure-password-3' }).expect(204);
+  await first.get('/api/user/auth/me').expect(401);
+
+  const afterDelete = await agent.get('/api/admin/users').expect(200);
+  const targetAfter = afterDelete.body.users.find(user => user.username === 'anotheruser');
+  await agent.delete('/api/admin/users/' + targetAfter.id).set('X-CSRF-Token', changed.body.csrfToken).expect(204);
+  await agent.get('/api/admin/users').expect(200).expect(({ body }) => assert.equal(body.users.length, 0));
 });
