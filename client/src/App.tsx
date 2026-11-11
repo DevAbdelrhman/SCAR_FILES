@@ -5,7 +5,7 @@ type FileRecord = { id: string; originalName: string; extension: string; mimeTyp
 type FormatStat = { extension: string; count: number; bytes: number };
 type Stats = { totalFiles: number; storageUsed: number; totalFormats: number; maxStorageBytes: number; maxFileBytes: number; maxBatchBytes: number; maxUploadFiles: number; formats: FormatStat[]; recent: FileRecord[] };
 type ApiError = { error?: string };
-type View = 'overview' | 'files';
+type View = 'overview' | 'files' | 'users';
 
 const formatBytes = (bytes: number) => {
   if (!bytes) return '0 B';
@@ -177,6 +177,7 @@ function GuestFiles() {
       <section className="chatfiles-main">
         <header className="chatfiles-topbar">
           <span className="chatfiles-breadcrumb">SCAR FILES <span>/</span> RESOURCE LIBRARY</span>
+          <a className="chatfiles-account-link" href="/account">Sign in / Create account</a>
           <button className="chatfiles-refresh" onClick={() => void loadPublicFiles()} disabled={loading}>
             <Icon name="arrow" size={15} /> {loading ? 'Refreshing' : 'Refresh'}
           </button>
@@ -265,6 +266,176 @@ function GuestFiles() {
   );
 }
 
+
+type UserAccount = { id: number; username: string; email: string; status: string; createdAt?: string };
+function UserPortal() {
+  const [user, setUser] = useState<UserAccount | null>(null);
+  const [csrf, setCsrf] = useState('');
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [identity, setIdentity] = useState('');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [files, setFiles] = useState<FileRecord[]>([]);
+  const [stats, setStats] = useState({ totalFiles: 0, storageUsed: 0, maxStorageBytes: 5 * 1024 * 1024 * 1024 });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [selected, setSelected] = useState<FileList | null>(null);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
+
+  const api = async <T,>(response: Response) => readJson<T>(response);
+  const refresh = useCallback(async () => {
+    const [dashboard, list] = await Promise.all([
+      fetch('/api/user/dashboard', { credentials: 'same-origin', cache: 'no-store' }).then(api<{ totalFiles: number; storageUsed: number; maxStorageBytes: number }>),
+      fetch('/api/user/files', { credentials: 'same-origin', cache: 'no-store' }).then(api<{ files: FileRecord[] }>),
+    ]);
+    setStats(dashboard); setFiles(list.files);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/csrf', { credentials: 'same-origin' }).then(api<{ csrfToken: string }>).then(async value => {
+      if (!active) return;
+      setCsrf(value.csrfToken);
+      const response = await fetch('/api/user/auth/me', { credentials: 'same-origin' });
+      if (response.ok) {
+        const result = await api<{ user: UserAccount }>(response);
+        if (active) setUser(result.user);
+      }
+    }).catch(() => {}).finally(() => { if (active) setBusy(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => { if (user) refresh().catch(err => setError(err.message || 'Could not load your files.')); }, [user, refresh]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('');
+    try {
+      let token = csrf;
+      if (!token) {
+        const result = await api<{ csrfToken: string }>(await fetch('/api/auth/csrf', { credentials: 'same-origin' }));
+        token = result.csrfToken; setCsrf(token);
+      }
+      const endpoint = mode === 'register' ? '/api/user/auth/register' : '/api/user/auth/login';
+      const body = mode === 'register' ? { username, email, password } : { identity, password };
+      const result = await api<{ user: UserAccount; csrfToken: string }>(await fetch(endpoint, {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token }, body: JSON.stringify(body),
+      }));
+      setCsrf(result.csrfToken); setUser(result.user); setPassword('');
+    } catch (err) { setError(err instanceof Error ? err.message : 'Authentication failed.'); }
+    finally { setBusy(false); }
+  }
+
+  async function uploadFiles() {
+    if (!selected?.length) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const form = new FormData(); Array.from(selected).forEach(file => form.append('files', file));
+      const result = await api<{ files: FileRecord[] }>(await fetch('/api/user/files/upload', {
+        method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf }, body: form,
+      }));
+      setSelected(null); setNotice(`${result.files.length} file(s) uploaded successfully.`); await refresh();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Upload failed.'); }
+    finally { setBusy(false); }
+  }
+
+  async function removeFile(file: FileRecord) {
+    if (!window.confirm(`Permanently delete "${file.originalName}"?`)) return;
+    setBusy(true); setError('');
+    try {
+      const response = await fetch(`/api/user/files/${encodeURIComponent(file.id)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf } });
+      if (!response.ok) throw new Error((await response.json() as ApiError).error || 'Delete failed.');
+      setNotice('File deleted.'); await refresh();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Delete failed.'); }
+    finally { setBusy(false); }
+  }
+
+  async function changePassword(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await api<{ csrfToken: string }>(await fetch('/api/user/auth/change-password', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      }));
+      setCsrf(result.csrfToken); setCurrentPassword(''); setNewPassword('');
+      setNotice('Password changed successfully. Other sessions have been signed out.');
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not change password.'); }
+    finally { setBusy(false); }
+  }
+
+  async function deleteAccount(event: FormEvent) {
+    event.preventDefault();
+    if (!window.confirm('Permanently delete your account and every file in your private workspace? This cannot be undone.')) return;
+    setBusy(true); setError('');
+    try {
+      const response = await fetch('/api/user/auth/account', {
+        method: 'DELETE', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ password: deletePassword }),
+      });
+      if (!response.ok) throw new Error((await response.json() as ApiError).error || 'Could not delete account.');
+      setUser(null); setFiles([]); setDeletePassword('');
+      const token = await api<{ csrfToken: string }>(await fetch('/api/auth/csrf', { credentials: 'same-origin' }));
+      setCsrf(token.csrfToken); setNotice('Your account and personal files have been deleted.');
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not delete account.'); }
+    finally { setBusy(false); }
+  }
+
+  async function signOut() {
+    setBusy(true);
+    try {
+      const response = await fetch('/api/user/auth/logout', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf } });
+      if (!response.ok) throw new Error('Could not sign out.');
+      setUser(null); setFiles([]); setIdentity(''); setPassword('');
+      const token = await api<{ csrfToken: string }>(await fetch('/api/auth/csrf', { credentials: 'same-origin' }));
+      setCsrf(token.csrfToken);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not sign out.'); }
+    finally { setBusy(false); }
+  }
+
+  return <main className="user-portal">
+    <header className="user-portal-header"><a href="/" aria-label="SCAR Files home"><Logo /></a><div><a href="/">Public library</a>{user ? <button onClick={signOut} disabled={busy}>Sign out</button> : <span>Secure user access</span>}</div></header>
+    {error && <div className="user-alert user-alert-error" role="alert">{error}</div>}
+    {notice && <div className="user-alert user-alert-success">{notice}</div>}
+    {!user ? <section className="user-auth-card">
+      <div className="login-eyebrow"><span/> SCAR USER ACCOUNT</div>
+      <h1>{mode === 'login' ? 'Your files. Your space.' : 'Create your account.'}</h1>
+      <p>{mode === 'login' ? 'Sign in to manage your private files.' : 'Get your own secure 5 GB file workspace.'}</p>
+      <div className="user-auth-tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError(''); }}>Sign in</button><button className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setError(''); }}>Create account</button></div>
+      <form onSubmit={submit} className="login-form">
+        {mode === 'register' ? <><label htmlFor="user-name">Username</label><input id="user-name" value={username} onChange={e => setUsername(e.target.value)} minLength={3} maxLength={32} autoComplete="username" required/><label htmlFor="user-email">Email</label><input id="user-email" type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" required/></> : <><label htmlFor="user-identity">Username or email</label><input id="user-identity" value={identity} onChange={e => setIdentity(e.target.value)} autoComplete="username" required/></>}
+        <label htmlFor="user-password">Password</label><input id="user-password" type="password" value={password} onChange={e => setPassword(e.target.value)} minLength={mode === 'register' ? 10 : undefined} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} required/>
+        {mode === 'register' && <small className="user-form-hint">Use at least 10 characters. User accounts cannot access admin controls.</small>}
+        <button className="button button-primary login-submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'} <Icon name="arrow" size={17}/></button>
+      </form>
+      <div className="login-foot"><Icon name="shield" size={15}/> Private by default · Secure session</div>
+    </section> : <section className="user-workspace">
+      <div className="user-workspace-heading"><div><div className="login-eyebrow"><span/> PERSONAL WORKSPACE</div><h1>Welcome, {user.username}.</h1><p>Your files are private and visible only to your account.</p></div><div className="user-storage-pill">{formatBytes(stats.storageUsed)} / {formatBytes(stats.maxStorageBytes)}</div></div>
+      <div className="user-stats"><article><span>YOUR FILES</span><strong>{stats.totalFiles}</strong></article><article><span>STORAGE USED</span><strong>{formatBytes(stats.storageUsed)}</strong></article><article><span>AVAILABLE</span><strong>{formatBytes(Math.max(0, stats.maxStorageBytes - stats.storageUsed))}</strong></article></div>
+      <section className="user-upload-card"><div><strong>Upload to your private space</strong><p>Files are private by default and never appear in the public library.</p></div><input type="file" multiple onChange={e => setSelected(e.target.files)} /><button className="button button-primary" onClick={uploadFiles} disabled={busy || !selected?.length}><Icon name="upload" size={16}/> Upload files</button></section>
+      <section className="user-files-card"><div className="user-files-heading"><div><h2>Your files</h2><p>{files.length} files in your workspace</p></div><button onClick={() => void refresh()} disabled={busy}>Refresh</button></div>
+        {files.length ? <div className="user-files-list">{files.map(file => <article key={file.id}><FileGlyph extension={file.extension}/><div><strong title={file.originalName}>{file.originalName}</strong><span>{formatBytes(file.fileSize)} · {formatDate(file.uploadedAt)}</span></div><a href={`/api/user/files/${encodeURIComponent(file.id)}/download`}><Icon name="download" size={17}/> Download</a><button onClick={() => void removeFile(file)} disabled={busy} aria-label={`Delete ${file.originalName}`}><Icon name="trash" size={17}/></button></article>)}</div> : <div className="user-files-empty"><Icon name="folder" size={26}/><strong>Your workspace is empty</strong><span>Upload your first file to get started.</span></div>}
+      </section>
+      <section className="user-account-settings">
+        <div><h2>Account security</h2><p>Update your password or permanently close your account.</p></div>
+        <form onSubmit={changePassword} className="user-security-form">
+          <label htmlFor="current-password">Current password</label><input id="current-password" type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" required/>
+          <label htmlFor="new-password">New password</label><input id="new-password" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} minLength={10} maxLength={72} autoComplete="new-password" required/>
+          <button className="button button-secondary" disabled={busy}>Change password</button>
+        </form>
+        <form onSubmit={deleteAccount} className="user-delete-form">
+          <div><strong>Delete account</strong><span>This permanently removes your account and all files you own.</span></div>
+          <input aria-label="Confirm password to delete account" type="password" value={deletePassword} onChange={e => setDeletePassword(e.target.value)} placeholder="Confirm your password" autoComplete="current-password" required/>
+          <button className="button button-danger" disabled={busy}>Delete my account</button>
+        </form>
+      </section>
+    </section>}
+    <footer className="user-portal-footer">SCAR DRONE · FILE PORTAL <span>Secure personal storage</span></footer>
+  </main>;
+}
+
 function App() {
   const [admin, setAdmin] = useState<Admin | null>(null);
   const [booting, setBooting] = useState(true);
@@ -278,6 +449,8 @@ function App() {
   const [direction, setDirection] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(1);
   const [fileTotal, setFileTotal] = useState(0);
+  const [adminUsers, setAdminUsers] = useState<(UserAccount & { totalFiles: number; storageUsed: number })[]>([]);
+  const [adminUserQuery, setAdminUserQuery] = useState('');
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -305,6 +478,37 @@ function App() {
     await Promise.all([loadStats(), loadFiles()]);
   }, [loadStats, loadFiles]);
 
+  const loadAdminUsers = useCallback(async () => {
+    const params = new URLSearchParams({ q: adminUserQuery });
+    const result = await readJson<{ users: (UserAccount & { totalFiles: number; storageUsed: number })[] }>(
+      await fetch('/api/admin/users?' + params, { credentials: 'same-origin', cache: 'no-store' })
+    );
+    setAdminUsers(result.users);
+  }, [adminUserQuery]);
+
+  async function updateUserStatus(user: UserAccount, status: 'active' | 'suspended') {
+    try {
+      const response = await fetch('/api/admin/users/' + user.id + '/status', {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ status }),
+      });
+      await readJson<{ success: boolean }>(response);
+      setToast(status === 'suspended' ? 'User account suspended' : 'User account reactivated');
+      await loadAdminUsers();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not update user.'); }
+  }
+
+  async function deleteAdminUser(user: UserAccount) {
+    if (!window.confirm('Permanently delete ' + user.username + ' and all files in their workspace?')) return;
+    try {
+      const response = await fetch('/api/admin/users/' + user.id, { method: 'DELETE', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrfToken } });
+      if (!response.ok) throw new Error((await response.json() as ApiError).error || 'Could not delete user.');
+      setToast('User account and owned files deleted');
+      await Promise.all([loadAdminUsers(), loadStats()]);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not delete user.'); }
+  }
+
   useEffect(() => {
     let live = true;
     fetch('/api/auth/csrf', { credentials: 'same-origin' })
@@ -325,6 +529,12 @@ function App() {
     if (!admin) return;
     loadStats().catch((err) => setError(err instanceof Error ? err.message : 'Could not load your dashboard.'));
   }, [admin, loadStats]);
+
+  useEffect(() => {
+    if (!admin || view !== 'users') return;
+    const timer = window.setTimeout(() => { loadAdminUsers().catch(err => setError(err instanceof Error ? err.message : 'Could not load users.')); }, 180);
+    return () => window.clearTimeout(timer);
+  }, [admin, view, loadAdminUsers]);
 
   useEffect(() => {
     if (!admin) return;
@@ -430,6 +640,8 @@ function App() {
   if (booting) return <div className="loading-screen"><Logo/><span className="spinner"></span></div>;
   const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin';
 
+  const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (!isAdminRoute && ['/account', '/register', '/workspace'].includes(currentPath)) return <UserPortal />;
   if (!isAdminRoute) return <GuestFiles />;
   if (!admin) return <Login onLogin={handleLogin} />;
 
@@ -440,6 +652,7 @@ function App() {
       <nav className="side-nav" aria-label="Main navigation">
         <button className={view === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setView('overview')} aria-label="Overview"><Icon name="grid"/><span>Overview</span></button>
         <button className={view === 'files' ? 'nav-item active' : 'nav-item'} onClick={() => setView('files')} aria-label="File manager"><Icon name="folder"/><span>File manager</span><span className="nav-count">{stats?.totalFiles ?? 0}</span></button>
+        <button className={view === 'users' ? 'nav-item active' : 'nav-item'} onClick={() => setView('users')} aria-label="User management"><Icon name="grid"/><span>User accounts</span><span className="nav-count">{adminUsers.length}</span></button>
       </nav>
       <div className="sidebar-spacer"></div>
       <div className="sidebar-storage">
@@ -458,7 +671,7 @@ function App() {
     <main className="main-content">
       <header className="topbar">
         <div className="mobile-brand"><Logo/></div>
-        <div className="breadcrumb"><span>SCAR FILES</span><b>/</b><strong>{view === 'overview' ? 'Overview' : 'File manager'}</strong></div>
+        <div className="breadcrumb"><span>SCAR FILES</span><b>/</b><strong>{view === 'overview' ? 'Overview' : view === 'users' ? 'User accounts' : 'File manager'}</strong></div>
         <div className="topbar-right"><span className="connection-status"><i></i> Private workspace</span><div className="top-avatar">{admin.username.slice(0, 1).toUpperCase()}</div></div>
       </header>
 
@@ -490,6 +703,20 @@ function App() {
           </section>
 
           <section className="security-banner"><div className="security-badge"><Icon name="shield" size={20}/></div><div><strong>Your files stay private.</strong><p>Only your administrator account can access this workspace.</p></div><span className="secure-pill"><i></i> SECURE</span></section>
+        </> : view === 'users' ? <>
+          <section className="file-page-heading"><div><div className="eyebrow"><span className="eyebrow-line"></span> ADMINISTRATION</div><h1>User accounts</h1><p>Review registrations and control access to personal workspaces.</p></div><button className="button button-secondary" onClick={() => void loadAdminUsers()}><Icon name="arrow" size={15}/> Refresh</button></section>
+          <section className="panel files-panel admin-users-panel">
+            <div className="files-toolbar"><div><h2>Registered users <span className="count-chip">{adminUsers.length}</span></h2><p>Users can only manage their own private files.</p></div><div className="admin-user-search"><Icon name="search" size={16}/><input aria-label="Search users" placeholder="Search username or email" value={adminUserQuery} onChange={event => setAdminUserQuery(event.target.value)}/></div></div>
+            <div className="admin-users-list">
+              {adminUsers.length ? adminUsers.map(user => <article key={user.id}>
+                <div className="profile-avatar">{user.username.slice(0,1).toUpperCase()}</div>
+                <div className="admin-user-identity"><strong>{user.username}</strong><span>{user.email}</span>{user.createdAt && <small>Joined {formatDate(user.createdAt)}</small>}</div>
+                <div className="admin-user-meta"><strong>{user.totalFiles} files</strong><span>{formatBytes(user.storageUsed)}</span></div>
+                <span className={user.status === 'active' ? 'admin-user-status active' : 'admin-user-status suspended'}>{user.status}</span>
+                <button className="button button-secondary" onClick={() => void updateUserStatus(user, user.status === 'active' ? 'suspended' : 'active')}>{user.status === 'active' ? 'Suspend' : 'Reactivate'}</button><button className="button button-danger" onClick={() => void deleteAdminUser(user)}>Delete</button>
+              </article>) : <div className="table-empty"><strong>No user accounts yet</strong><p>New registrations will appear here.</p></div>}
+            </div>
+          </section>
         </> : <>
           <section className="file-page-heading"><div><div className="eyebrow"><span className="eyebrow-line"></span> YOUR LIBRARY</div><h1>File manager</h1><p>Organize and access everything in your private space.</p></div><button className="button button-primary" onClick={() => fileInput.current?.click()}><Icon name="plus" size={18}/> Upload files</button></section>
           <section className="upload-zone-wrap">

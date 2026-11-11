@@ -91,6 +91,18 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function requireUser(req, res, next) {
+  const userId = req.session?.userId;
+  if (!userId || req.session?.adminId) return res.status(401).json({ error: 'User authentication required.' });
+  const user = db.prepare("SELECT id, username, email, status, session_version, created_at AS createdAt FROM users WHERE id = ?").get(userId);
+  if (!user || user.status !== 'active' || req.session.userVersion !== user.session_version) {
+    return req.session.destroy(() => res.status(401).json({ error: 'Your account is unavailable. Contact support.' }));
+  }
+  const { session_version: _sessionVersion, ...publicUser } = user;
+  req.user = publicUser;
+  next();
+}
+
 const apiLimiter = rateLimit({ windowMs: 60_000, limit: 180, standardHeaders: 'draft-7', legacyHeaders: false });
 app.use('/api', apiLimiter);
 
@@ -140,6 +152,192 @@ app.post('/api/auth/logout', requireAdmin, requireCsrf, (req, res, next) => {
 
 app.get('/api/auth/me', requireAdmin, (req, res) => {
   res.set('Cache-Control', 'no-store').json({ admin: { username: req.admin.username } });
+});
+
+const registerLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: 'draft-7', legacyHeaders: false });
+app.post('/api/user/auth/register', registerLimiter, requireCsrf, async (req, res, next) => {
+  try {
+    const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) return res.status(400).json({ error: 'Username must be 3–32 characters using letters, numbers, dots, dashes or underscores.' });
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+    if (password.length < 10 || Buffer.byteLength(password, 'utf8') > 72) return res.status(400).json({ error: 'Password must be at least 10 characters.' });
+    const passwordHash = await bcrypt.hash(password, 12);
+    let result;
+    try { result = db.prepare('INSERT INTO users(username, email, password_hash) VALUES (?, ?, ?)').run(username, email, passwordHash); }
+    catch (error) {
+      if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'That username or email is already registered.' });
+      throw error;
+    }
+    req.session.regenerate(async (error) => {
+      if (error) return next(error);
+      req.session.userId = Number(result.lastInsertRowid);
+      req.session.userVersion = 0;
+      req.session.csrfToken = await csrfToken();
+      req.session.save((saveError) => {
+        if (saveError) return next(saveError);
+        res.status(201).set('Cache-Control', 'no-store').json({
+          user: { id: Number(result.lastInsertRowid), username, email },
+          csrfToken: req.session.csrfToken,
+        });
+      });
+    });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/user/auth/login', loginLimiter, requireCsrf, async (req, res, next) => {
+  try {
+    const identity = typeof req.body?.identity === 'string' ? req.body.identity.trim() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!identity || identity.length > 254 || !password || Buffer.byteLength(password, 'utf8') > 72) return res.status(400).json({ error: 'Enter your username/email and password.' });
+    const user = db.prepare('SELECT id, username, email, password_hash, status, session_version FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE').get(identity, identity);
+    const matches = await bcrypt.compare(password, user?.password_hash || dummyPasswordHash);
+    if (!user || !matches) return res.status(401).json({ error: 'The email/username or password is incorrect.' });
+    if (user.status !== 'active') return res.status(403).json({ error: 'This account is suspended. Contact SCAR support.' });
+    req.session.regenerate(async (error) => {
+      if (error) return next(error);
+      req.session.userId = user.id;
+      req.session.userVersion = user.session_version;
+      req.session.csrfToken = await csrfToken();
+      req.session.save((saveError) => {
+        if (saveError) return next(saveError);
+        res.set('Cache-Control', 'no-store').json({ user: { id: user.id, username: user.username, email: user.email }, csrfToken: req.session.csrfToken });
+      });
+    });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/user/auth/me', requireUser, (req, res) => res.set('Cache-Control', 'no-store').json({ user: req.user }));
+app.post('/api/user/auth/logout', requireUser, requireCsrf, (req, res, next) => {
+  req.session.destroy((error) => {
+    if (error) return next(error);
+    res.clearCookie('scar.files.sid', { httpOnly: true, secure: isProduction, sameSite: 'lax', path: '/' });
+    res.status(204).end();
+  });
+});
+
+const passwordChangeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: 'draft-7', legacyHeaders: false });
+app.post('/api/user/auth/change-password', passwordChangeLimiter, requireUser, requireCsrf, async (req, res, next) => {
+  try {
+    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+    if (!currentPassword || !newPassword || newPassword.length < 10 || Buffer.byteLength(newPassword, 'utf8') > 72) {
+      return res.status(400).json({ error: 'Enter your current password and a new password of at least 10 characters.' });
+    }
+    const account = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!await bcrypt.compare(currentPassword, account.password_hash)) return res.status( currentPassword ? 403 : 400).json({ error: 'Your current password is incorrect.' });
+    const hash = await bcrypt.hash(newPassword, 12);
+    db.prepare('UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?').run(hash, req.user.id);
+    const nextVersion = db.prepare('SELECT session_version FROM users WHERE id = ?').get(req.user.id).session_version;
+    req.session.regenerate(async error => {
+      if (error) return next(error);
+      req.session.userId = req.user.id;
+      req.session.userVersion = nextVersion;
+      req.session.csrfToken = await csrfToken();
+      req.session.save(saveError => {
+        if (saveError) return next(saveError);
+        res.set('Cache-Control', 'no-store').json({ success: true, csrfToken: req.session.csrfToken });
+      });
+    });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/user/auth/account', requireUser, requireCsrf, async (req, res, next) => {
+  try {
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const account = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!password || !await bcrypt.compare(password, account.password_hash)) return res.status(403).json({ error: 'Password confirmation failed.' });
+    const owned = db.prepare('SELECT storage_path, stored_name FROM files WHERE user_id = ?').all(req.user.id);
+    const removeAccount = db.transaction(() => db.prepare('DELETE FROM users WHERE id = ?').run(req.user.id));
+    removeAccount();
+    for (const file of owned) {
+      const fullPath = safeStoragePath(file);
+      if (fullPath) fs.rmSync(fullPath, { force: true });
+    }
+    req.session.destroy(error => {
+      if (error) return next(error);
+      res.clearCookie('scar.files.sid', { httpOnly: true, secure: isProduction, sameSite: 'lax', path: '/' });
+      res.status(204).end();
+    });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/user/dashboard', requireUser, (req, res) => {
+  const stats = db.prepare('SELECT COUNT(*) AS totalFiles, COALESCE(SUM(file_size), 0) AS storageUsed FROM files WHERE user_id = ?').get(req.user.id);
+  const recent = db.prepare('SELECT id, original_name AS originalName, extension, file_size AS fileSize, uploaded_at AS uploadedAt FROM files WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT 5').all(req.user.id);
+  res.set('Cache-Control', 'no-store').json({ ...stats, maxStorageBytes: 5 * 1024 * 1024 * 1024, recent });
+});
+
+app.get('/api/user/files', requireUser, (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 160) : '';
+  const page = Math.max(1, Math.min(100000, Number.parseInt(req.query.page, 10) || 1));
+  const pageSize = 50;
+  const count = q
+    ? db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0').get(req.user.id, q).total
+    : db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ?').get(req.user.id).total;
+  const rows = q
+    ? db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0 ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, q, pageSize, (page - 1) * pageSize)
+    : db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, pageSize, (page - 1) * pageSize);
+  res.set('Cache-Control', 'no-store').json({
+    files: rows.map(row => ({ id: row.id, originalName: row.original_name, extension: row.extension, mimeType: row.mime_type, fileSize: row.file_size, uploadedAt: row.uploaded_at, isPublic: false })),
+    total: count, page, pageSize,
+  });
+});
+
+app.get('/api/user/files/:id/download', requireUser, (req, res, next) => {
+  if (!idPattern.test(req.params.id)) return res.status(404).json({ error: 'File not found.' });
+  const row = db.prepare('SELECT * FROM files WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'File not found.' });
+  const storagePath = safeStoragePath(row);
+  if (!storagePath || !fs.existsSync(storagePath)) return res.status(404).json({ error: 'File content is unavailable.' });
+  res.set({ 'Content-Type': 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
+  res.download(storagePath, row.original_name, { headers: { 'Content-Type': 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' } }, error => { if (error && !res.headersSent) next(error); });
+});
+
+app.delete('/api/user/files/:id', requireUser, requireCsrf, (req, res, next) => {
+  if (!idPattern.test(req.params.id)) return res.status(404).json({ error: 'File not found.' });
+  const row = db.prepare('SELECT * FROM files WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'File not found.' });
+  const storagePath = safeStoragePath(row);
+  if (!storagePath) return res.status(500).json({ error: 'File storage record is invalid.' });
+  try { db.prepare('DELETE FROM files WHERE id = ? AND user_id = ?').run(row.id, req.user.id); fs.rmSync(storagePath, { force: true }); res.status(204).end(); }
+  catch (error) { next(error); }
+});
+
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : '';
+  const base = `SELECT u.id, u.username, u.email, u.status, u.created_at AS createdAt,
+    COUNT(f.id) AS totalFiles, COALESCE(SUM(f.file_size), 0) AS storageUsed
+    FROM users u LEFT JOIN files f ON f.user_id = u.id`;
+  const users = q
+    ? db.prepare(base + ' WHERE instr(lower(u.username), lower(?)) > 0 OR instr(lower(u.email), lower(?)) > 0 GROUP BY u.id ORDER BY u.created_at DESC LIMIT 500').all(q, q)
+    : db.prepare(base + ' GROUP BY u.id ORDER BY u.created_at DESC LIMIT 500').all();
+  res.set('Cache-Control', 'no-store').json({ users });
+});
+
+app.patch('/api/admin/users/:id/status', requireAdmin, requireCsrf, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0 || !['active', 'suspended'].includes(req.body?.status)) return res.status(400).json({ error: 'Invalid user status.' });
+  const result = db.prepare('UPDATE users SET status = ? WHERE id = ?').run(req.body.status, id);
+  if (!result.changes) return res.status(404).json({ error: 'User not found.' });
+  res.json({ success: true });
+});
+
+app.delete('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user id.' });
+  try {
+    const owned = db.prepare('SELECT storage_path, stored_name FROM files WHERE user_id = ?').all(id);
+    const removeAccount = db.transaction(() => db.prepare('DELETE FROM users WHERE id = ?').run(id));
+    const result = removeAccount();
+    if (!result.changes) return res.status(404).json({ error: 'User not found.' });
+    for (const file of owned) {
+      const fullPath = safeStoragePath(file);
+      if (fullPath) fs.rmSync(fullPath, { force: true });
+    }
+    res.status(204).end();
+  } catch (error) { next(error); }
 });
 
 function readStats() {
@@ -410,6 +608,37 @@ app.post('/api/files/upload', requireAdmin, requireCsrf, acquireUpload, parseUpl
       fileSize: record.fileSize,
       uploadedAt: record.uploadedAt,
     })) });
+  } catch (error) { next(error); }
+  finally { req.releaseUpload(); }
+});
+
+
+app.post('/api/user/files/upload', requireUser, requireCsrf, acquireUpload, parseUploads, (req, res, next) => {
+  const uploaded = req.files || [];
+  try {
+    if (!uploaded.length) return res.status(400).json({ error: 'Choose at least one file to upload.' });
+    const batchSize = uploaded.reduce((sum, file) => sum + file.size, 0);
+    const current = db.prepare('SELECT COALESCE(SUM(file_size), 0) AS bytes FROM files WHERE user_id = ?').get(req.user.id).bytes;
+    const globalCurrent = db.prepare('SELECT COALESCE(SUM(file_size), 0) AS bytes FROM files').get().bytes;
+    const userQuota = 5 * 1024 * 1024 * 1024;
+    if (current + batchSize > userQuota) {
+      uploaded.forEach(file => fs.rmSync(file.path, { force: true }));
+      return res.status(413).json({ error: 'Your 5 GB personal storage limit would be exceeded.' });
+    }
+    if (globalCurrent + batchSize > config.maxStorageBytes) {
+      uploaded.forEach(file => fs.rmSync(file.path, { force: true }));
+      return res.status(413).json({ error: 'SCAR storage is currently full. Try again later.' });
+    }
+    const now = new Date().toISOString();
+    const insert = db.prepare(`INSERT INTO files(id, original_name, stored_name, extension, mime_type, file_size, storage_path, uploaded_at, user_id)
+      VALUES (@id, @originalName, @storedName, @extension, @mimeType, @fileSize, @storagePath, @uploadedAt, @userId)`);
+    const records = uploaded.map(file => {
+      const originalName = cleanOriginalName(file.originalname);
+      return { id: crypto.randomUUID(), originalName, storedName: path.basename(file.path), extension: path.extname(originalName).slice(0, 32).toLowerCase() || '(no extension)', mimeType: 'application/octet-stream', fileSize: file.size, storagePath: path.resolve(file.path), uploadedAt: now, userId: req.user.id };
+    });
+    try { db.transaction(items => items.forEach(item => insert.run(item)))(records); }
+    catch (error) { uploaded.forEach(file => fs.rmSync(file.path, { force: true })); throw error; }
+    res.status(201).json({ files: records.map(({ id, originalName, extension, fileSize, uploadedAt }) => ({ id, originalName, extension, fileSize, uploadedAt })) });
   } catch (error) { next(error); }
   finally { req.releaseUpload(); }
 });

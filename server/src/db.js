@@ -21,6 +21,16 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended')),
+    session_version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+
   CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     original_name TEXT NOT NULL,
@@ -29,14 +39,24 @@ db.exec(`
     mime_type TEXT NOT NULL,
     file_size INTEGER NOT NULL CHECK(file_size >= 0),
     storage_path TEXT NOT NULL UNIQUE,
-    uploaded_at TEXT NOT NULL
+    uploaded_at TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
   );
 
   CREATE INDEX IF NOT EXISTS files_uploaded_at_idx ON files(uploaded_at DESC);
   CREATE INDEX IF NOT EXISTS files_name_idx ON files(original_name COLLATE NOCASE);
+  CREATE INDEX IF NOT EXISTS users_created_at_idx ON users(created_at DESC);
 `);
 
+const userColumns = db.pragma('table_info(users)');
+if (!userColumns.some((column) => column.name === 'session_version')) {
+  db.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0');
+}
+
 const fileColumns = db.pragma('table_info(files)');
+if (!fileColumns.some((column) => column.name === 'user_id')) {
+  db.exec('ALTER TABLE files ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE');
+}
 if (!fileColumns.some((column) => column.name === 'is_public')) {
   db.exec('ALTER TABLE files ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK (is_public IN (0, 1))');
 }
@@ -46,3 +66,5 @@ export function closeDatabase() {
   if (db.open) db.close();
 }
 
+
+db.exec('CREATE INDEX IF NOT EXISTS files_user_uploaded_at_idx ON files(user_id, uploaded_at DESC)');
