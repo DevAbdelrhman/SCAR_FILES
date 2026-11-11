@@ -135,6 +135,11 @@ test('user registration, private workspace, ownership isolation, and admin moder
   const secondCsrf = (await second.get('/api/auth/csrf').expect(200)).body.csrfToken;
   await second.post('/api/user/auth/register').set('X-CSRF-Token', secondCsrf)
     .send({ username: 'anotheruser', email: 'another@example.com', password: 'long-secure-pass-2' }).expect(201);
+  const secondUpload = await second.post('/api/user/files/upload')
+    .set('X-CSRF-Token', (await second.get('/api/auth/csrf')).body.csrfToken)
+    .attach('files', Buffer.from('remove on admin deletion'), 'admin-delete.txt').expect(201);
+  const adminDeleteFilePath = db.prepare('SELECT storage_path FROM files WHERE id = ?').get(secondUpload.body.files[0].id).storage_path;
+  assert.equal(fs.existsSync(adminDeleteFilePath), true);
   await second.get('/api/user/files').expect(200).expect(({ body }) => assert.equal(body.total, 0));
   await second.get('/api/user/files/' + privateId + '/download').expect(404);
   await second.delete('/api/user/files/' + privateId).set('X-CSRF-Token', (await second.get('/api/auth/csrf')).body.csrfToken).expect(404);
@@ -142,6 +147,12 @@ test('user registration, private workspace, ownership isolation, and admin moder
   await first.get('/api/user/files/' + privateId + '/download').expect(200);
   await first.delete('/api/user/files/' + privateId).set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken).expect(204);
   await first.get('/api/user/files').expect(200).expect(({ body }) => assert.equal(body.total, 0));
+  const accountFile = await first.post('/api/user/files/upload')
+    .set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
+    .attach('files', Buffer.from('remove on account deletion'), 'account-delete.txt').expect(201);
+  const accountFileId = accountFile.body.files[0].id;
+  const accountFilePath = db.prepare('SELECT storage_path FROM files WHERE id = ?').get(accountFileId).storage_path;
+  assert.equal(fs.existsSync(accountFilePath), true);
 
   const adminCsrf = (await agent.get('/api/auth/csrf').expect(200)).body.csrfToken;
   const adminLogin = await agent.post('/api/auth/login').set('X-CSRF-Token', adminCsrf)
@@ -176,10 +187,12 @@ test('user registration, private workspace, ownership isolation, and admin moder
     .send({ password: 'incorrect-password' }).expect(403);
   await first.delete('/api/user/auth/account').set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
     .send({ password: 'new-secure-password-3' }).expect(204);
+  assert.equal(fs.existsSync(accountFilePath), false);
   await first.get('/api/user/auth/me').expect(401);
 
   const afterDelete = await agent.get('/api/admin/users').expect(200);
   const targetAfter = afterDelete.body.users.find(user => user.username === 'anotheruser');
   await agent.delete('/api/admin/users/' + targetAfter.id).set('X-CSRF-Token', adminLogin.body.csrfToken).expect(204);
+  assert.equal(fs.existsSync(adminDeleteFilePath), false);
   await agent.get('/api/admin/users').expect(200).expect(({ body }) => assert.equal(body.users.length, 0));
 });
