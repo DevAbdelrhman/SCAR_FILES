@@ -140,7 +140,7 @@ test('user registration, private workspace, ownership isolation, and admin moder
     .attach('files', Buffer.from('remove on admin deletion'), 'admin-delete.txt').expect(201);
   const adminDeleteFilePath = db.prepare('SELECT storage_path FROM files WHERE id = ?').get(secondUpload.body.files[0].id).storage_path;
   assert.equal(fs.existsSync(adminDeleteFilePath), true);
-  await second.get('/api/user/files').expect(200).expect(({ body }) => assert.equal(body.total, 0));
+  await second.get('/api/user/files').expect(200).expect(({ body }) => assert.equal(body.total, 1));
   await second.get('/api/user/files/' + privateId + '/download').expect(404);
   await second.delete('/api/user/files/' + privateId).set('X-CSRF-Token', (await second.get('/api/auth/csrf')).body.csrfToken).expect(404);
 
