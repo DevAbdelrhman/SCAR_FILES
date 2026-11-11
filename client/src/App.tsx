@@ -5,7 +5,7 @@ type FileRecord = { id: string; originalName: string; extension: string; mimeTyp
 type FormatStat = { extension: string; count: number; bytes: number };
 type Stats = { totalFiles: number; storageUsed: number; totalFormats: number; maxStorageBytes: number; maxFileBytes: number; maxBatchBytes: number; maxUploadFiles: number; formats: FormatStat[]; recent: FileRecord[] };
 type ApiError = { error?: string };
-type View = 'overview' | 'files';
+type View = 'overview' | 'files' | 'users';
 
 const formatBytes = (bytes: number) => {
   if (!bytes) return '0 B';
@@ -403,6 +403,7 @@ function App() {
   const [direction, setDirection] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(1);
   const [fileTotal, setFileTotal] = useState(0);
+  const [adminUsers, setAdminUsers] = useState<(UserAccount & { totalFiles: number; storageUsed: number })[]>([]);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -430,6 +431,26 @@ function App() {
     await Promise.all([loadStats(), loadFiles()]);
   }, [loadStats, loadFiles]);
 
+  const loadAdminUsers = useCallback(async () => {
+    const result = await readJson<{ users: (UserAccount & { totalFiles: number; storageUsed: number })[] }>(
+      await fetch('/api/admin/users', { credentials: 'same-origin', cache: 'no-store' })
+    );
+    setAdminUsers(result.users);
+  }, []);
+
+  async function updateUserStatus(user: UserAccount, status: 'active' | 'suspended') {
+    try {
+      const response = await fetch('/api/admin/users/' + user.id + '/status', {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ status }),
+      });
+      await readJson<{ success: boolean }>(response);
+      setToast(status === 'suspended' ? 'User account suspended' : 'User account reactivated');
+      await loadAdminUsers();
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not update user.'); }
+  }
+
   useEffect(() => {
     let live = true;
     fetch('/api/auth/csrf', { credentials: 'same-origin' })
@@ -450,6 +471,11 @@ function App() {
     if (!admin) return;
     loadStats().catch((err) => setError(err instanceof Error ? err.message : 'Could not load your dashboard.'));
   }, [admin, loadStats]);
+
+  useEffect(() => {
+    if (!admin || view !== 'users') return;
+    loadAdminUsers().catch(err => setError(err instanceof Error ? err.message : 'Could not load users.'));
+  }, [admin, view, loadAdminUsers]);
 
   useEffect(() => {
     if (!admin) return;
@@ -567,6 +593,7 @@ function App() {
       <nav className="side-nav" aria-label="Main navigation">
         <button className={view === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setView('overview')} aria-label="Overview"><Icon name="grid"/><span>Overview</span></button>
         <button className={view === 'files' ? 'nav-item active' : 'nav-item'} onClick={() => setView('files')} aria-label="File manager"><Icon name="folder"/><span>File manager</span><span className="nav-count">{stats?.totalFiles ?? 0}</span></button>
+        <button className={view === 'users' ? 'nav-item active' : 'nav-item'} onClick={() => setView('users')} aria-label="User management"><Icon name="grid"/><span>User accounts</span><span className="nav-count">{adminUsers.length}</span></button>
       </nav>
       <div className="sidebar-spacer"></div>
       <div className="sidebar-storage">
@@ -585,7 +612,7 @@ function App() {
     <main className="main-content">
       <header className="topbar">
         <div className="mobile-brand"><Logo/></div>
-        <div className="breadcrumb"><span>SCAR FILES</span><b>/</b><strong>{view === 'overview' ? 'Overview' : 'File manager'}</strong></div>
+        <div className="breadcrumb"><span>SCAR FILES</span><b>/</b><strong>{view === 'overview' ? 'Overview' : view === 'users' ? 'User accounts' : 'File manager'}</strong></div>
         <div className="topbar-right"><span className="connection-status"><i></i> Private workspace</span><div className="top-avatar">{admin.username.slice(0, 1).toUpperCase()}</div></div>
       </header>
 
@@ -617,6 +644,20 @@ function App() {
           </section>
 
           <section className="security-banner"><div className="security-badge"><Icon name="shield" size={20}/></div><div><strong>Your files stay private.</strong><p>Only your administrator account can access this workspace.</p></div><span className="secure-pill"><i></i> SECURE</span></section>
+        </> : view === 'users' ? <>
+          <section className="file-page-heading"><div><div className="eyebrow"><span className="eyebrow-line"></span> ADMINISTRATION</div><h1>User accounts</h1><p>Review registrations and control access to personal workspaces.</p></div><button className="button button-secondary" onClick={() => void loadAdminUsers()}><Icon name="arrow" size={15}/> Refresh</button></section>
+          <section className="panel files-panel admin-users-panel">
+            <div className="files-toolbar"><div><h2>Registered users <span className="count-chip">{adminUsers.length}</span></h2><p>Users can only manage their own private files.</p></div></div>
+            <div className="admin-users-list">
+              {adminUsers.length ? adminUsers.map(user => <article key={user.id}>
+                <div className="profile-avatar">{user.username.slice(0,1).toUpperCase()}</div>
+                <div className="admin-user-identity"><strong>{user.username}</strong><span>{user.email}</span></div>
+                <div className="admin-user-meta"><strong>{user.totalFiles} files</strong><span>{formatBytes(user.storageUsed)}</span></div>
+                <span className={user.status === 'active' ? 'admin-user-status active' : 'admin-user-status suspended'}>{user.status}</span>
+                <button className="button button-secondary" onClick={() => void updateUserStatus(user, user.status === 'active' ? 'suspended' : 'active')}>{user.status === 'active' ? 'Suspend' : 'Reactivate'}</button>
+              </article>) : <div className="table-empty"><strong>No user accounts yet</strong><p>New registrations will appear here.</p></div>}
+            </div>
+          </section>
         </> : <>
           <section className="file-page-heading"><div><div className="eyebrow"><span className="eyebrow-line"></span> YOUR LIBRARY</div><h1>File manager</h1><p>Organize and access everything in your private space.</p></div><button className="button button-primary" onClick={() => fileInput.current?.click()}><Icon name="plus" size={18}/> Upload files</button></section>
           <section className="upload-zone-wrap">
