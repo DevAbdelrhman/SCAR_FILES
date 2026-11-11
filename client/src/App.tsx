@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from 'react';
 
 type Admin = { username: string };
-type FileRecord = { id: string; originalName: string; extension: string; mimeType: string; fileSize: number; uploadedAt: string };
+type FileRecord = { id: string; originalName: string; extension: string; mimeType: string; fileSize: number; uploadedAt: string; isPublic: boolean };
 type FormatStat = { extension: string; count: number; bytes: number };
 type Stats = { totalFiles: number; storageUsed: number; totalFormats: number; maxStorageBytes: number; maxFileBytes: number; maxBatchBytes: number; maxUploadFiles: number; formats: FormatStat[]; recent: FileRecord[] };
 type ApiError = { error?: string };
@@ -89,6 +89,180 @@ function Login({ onLogin }: { onLogin: (username: string, password: string) => P
     <div className="login-orbit orbit-one"></div><div className="login-orbit orbit-two"></div>
     <div className="login-caption">SCAR DRONE <span>·</span> FILE MANAGEMENT</div>
   </main>;
+}
+
+
+function GuestFiles() {
+  const [files, setFiles] = useState<FileRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<'all' | 'firmware' | 'archives'>('all');
+  const [sort, setSort] = useState<'newest' | 'oldest' | 'name' | 'size'>('newest');
+
+  const loadPublicFiles = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const result = await readJson<{ files: FileRecord[] }>(
+        await fetch('/api/public/files', {
+          credentials: 'same-origin',
+          cache: 'no-store'
+        })
+      );
+      setFiles(result.files);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load public files.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadPublicFiles(); }, [loadPublicFiles]);
+
+  const filteredFiles = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return files
+      .filter(file => {
+        const name = file.originalName.toLowerCase();
+        const matchesQuery = !normalized || name.includes(normalized);
+        const matchesCategory =
+          category === 'all' ||
+          (category === 'firmware' && name.includes('.bin')) ||
+          (category === 'archives' && /\.(zip|gz|tar|7z|rar)$/i.test(name));
+        return matchesQuery && matchesCategory;
+      })
+      .sort((a, b) => {
+        if (sort === 'name') return a.originalName.localeCompare(b.originalName);
+        if (sort === 'size') return b.fileSize - a.fileSize;
+        if (sort === 'oldest') return new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime();
+        return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
+      });
+  }, [files, query, category, sort]);
+
+  const totalSize = files.reduce((sum, file) => sum + file.fileSize, 0);
+
+  return (
+    <main className="chatfiles-shell">
+      <aside className="chatfiles-sidebar">
+        <a className="chatfiles-brand" href="/" aria-label="SCAR Files home">
+          <Logo />
+        </a>
+
+
+
+        <div className="chatfiles-nav-label">LIBRARY</div>
+        <nav className="chatfiles-nav" aria-label="File categories">
+          <button className={category === 'all' ? 'active' : ''} onClick={() => setCategory('all')}>
+            <Icon name="grid" size={17} /> <span>All files</span>
+            <small>{files.length}</small>
+          </button>
+          <button className={category === 'firmware' ? 'active' : ''} onClick={() => setCategory('firmware')}>
+            <Icon name="harddrive" size={17} /> <span>Firmware</span>
+          </button>
+          <button className={category === 'archives' ? 'active' : ''} onClick={() => setCategory('archives')}>
+            <Icon name="folder" size={17} /> <span>Archives</span>
+          </button>
+        </nav>
+
+        <div className="chatfiles-sidebar-bottom">
+          <div className="chatfiles-storage">
+            <span className="chatfiles-storage-icon"><Icon name="shield" size={16} /></span>
+            <div><strong>Public resources</strong><small>Shared by SCAR team</small></div>
+          </div>
+          <span className="chatfiles-sidebar-caption">SCAR DRONE · FILE PORTAL</span>
+        </div>
+      </aside>
+
+      <section className="chatfiles-main">
+        <header className="chatfiles-topbar">
+          <span className="chatfiles-breadcrumb">SCAR FILES <span>/</span> RESOURCE LIBRARY</span>
+          <button className="chatfiles-refresh" onClick={() => void loadPublicFiles()} disabled={loading}>
+            <Icon name="arrow" size={15} /> {loading ? 'Refreshing' : 'Refresh'}
+          </button>
+        </header>
+
+        <div className="chatfiles-content">
+          <div className="chatfiles-welcome">
+            <div className="chatfiles-kicker"><span /> OFFICIAL RESOURCE CENTER</div>
+            <h1>What are you<br /><span>looking for?</span></h1>
+            <p>Find and download firmware, software and resources published by the SCAR Drone team.</p>
+          </div>
+
+          <label className="chatfiles-search">
+            <Icon name="search" size={19} />
+            <input
+              type="search"
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="Search the SCAR file library..."
+              aria-label="Search public files"
+            />
+            <kbd>⌘ K</kbd>
+          </label>
+
+          <div className="chatfiles-section-head">
+            <div>
+              <h2>{category === 'all' ? 'All resources' : category === 'firmware' ? 'Firmware' : 'Archives'}</h2>
+              <p>{loading ? 'Loading library...' : `${filteredFiles.length} resources available · ${formatBytes(totalSize)} total`}</p>
+            </div>
+            <label className="chatfiles-sort">
+              <span>Sort</span>
+              <select value={sort} onChange={event => setSort(event.target.value as typeof sort)}>
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="name">Name</option>
+                <option value="size">File size</option>
+              </select>
+            </label>
+          </div>
+
+          {loading ? (
+            <div className="chatfiles-state"><span className="spinner" /> Loading resources...</div>
+          ) : error ? (
+            <div className="chatfiles-error" role="alert">
+              <Icon name="shield" size={19} />
+              <div><strong>Unable to load files</strong><span>{error}</span></div>
+              <button onClick={() => void loadPublicFiles()}>Try again</button>
+            </div>
+          ) : filteredFiles.length ? (
+            <div className="chatfiles-list">
+              {filteredFiles.map(file => (
+                <article className="chatfiles-row" key={file.id}>
+                  <FileGlyph extension={file.extension} />
+                  <div className="chatfiles-file-info">
+                    <strong title={file.originalName}>{file.originalName}</strong>
+                    <span>{file.extension.replace('.', '').toUpperCase() || 'FILE'} · {formatBytes(file.fileSize)}</span>
+                  </div>
+                  <span className="chatfiles-file-date">{formatDate(file.uploadedAt)}</span>
+                  <a
+                    className="chatfiles-download"
+                    href={`/api/public/files/${encodeURIComponent(file.id)}/download`}
+                    aria-label={`Download ${file.originalName}`}
+                  >
+                    <Icon name="download" size={17} />
+                    <span>Download</span>
+                  </a>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="chatfiles-empty">
+              <Icon name="folder" size={25} />
+              <strong>{files.length ? 'No matching resources' : 'No public files yet'}</strong>
+              <p>{files.length ? 'Try another search or category.' : 'Files will appear here when the SCAR team publishes them.'}</p>
+              {files.length > 0 && <button onClick={() => { setQuery(''); setCategory('all'); }}>Clear filters</button>}
+            </div>
+          )}
+
+          <footer className="chatfiles-footer">
+            <span>SCAR DRONE</span>
+            <span>{files.length} PUBLIC FILES <i /> {formatBytes(totalSize)} LIBRARY</span>
+          </footer>
+        </div>
+      </section>
+    </main>
+  );
 }
 
 function App() {
@@ -187,6 +361,7 @@ function App() {
     try {
       const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrfToken } });
       if (!response.ok) throw new Error((await response.json() as ApiError).error || 'Sign out failed.');
+      window.history.replaceState({}, '', '/');
       setAdmin(null); setFiles([]); setStats(null); setView('overview');
       const csrf = await readJson<{ csrfToken: string }>(await fetch('/api/auth/csrf', { credentials: 'same-origin' }));
       setCsrfToken(csrf.csrfToken);
@@ -234,10 +409,29 @@ function App() {
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not delete this file.'); }
   }
 
+  async function togglePublic(file: FileRecord) {
+    try {
+      const response = await fetch(`/api/files/${encodeURIComponent(file.id)}/public`, {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ isPublic: !file.isPublic }),
+      });
+      await readJson<{ file: FileRecord }>(response);
+      setToast(file.isPublic ? 'File is now private' : 'File published for guests');
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update publication status.');
+    }
+  }
+
   const usedPercentage = useMemo(() => stats ? Math.min((stats.storageUsed / stats.maxStorageBytes) * 100, 100) : 0, [stats]);
 
   if (booting) return <div className="loading-screen"><Logo/><span className="spinner"></span></div>;
-  if (!admin) return <Login onLogin={handleLogin}/>;
+  const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin';
+
+  if (!isAdminRoute) return <GuestFiles />;
+  if (!admin) return <Login onLogin={handleLogin} />;
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -320,7 +514,7 @@ function App() {
               </div>
             </div>
             <div className="file-table-wrap"><table className="file-table"><thead><tr><th>NAME</th><th>FILE TYPE</th><th>SIZE</th><th>DATE ADDED</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
-              {loadingFiles ? <tr><td colSpan={5}><div className="table-state"><span className="spinner"></span> Loading files…</div></td></tr> : files.length ? files.map((file) => <tr key={file.id}><td><div className="table-file"><FileGlyph extension={file.extension}/><strong title={file.originalName}>{file.originalName}</strong></div></td><td><span className="type-pill">{file.extension}</span></td><td>{formatBytes(file.fileSize)}</td><td>{formatDate(file.uploadedAt)}</td><td><div className="row-actions"><a className="icon-button" href={`/api/files/${file.id}/download`} title="Download" aria-label={`Download ${file.originalName}`}><Icon name="download" size={16}/></a><button className="icon-button danger-action" onClick={() => setDeleteTarget(file)} title="Delete" aria-label={`Delete ${file.originalName}`}><Icon name="trash" size={16}/></button></div></td></tr>) : <tr><td colSpan={5}><div className="table-empty"><div className="empty-art compact-art"><div><Icon name="folder" size={20}/></div><span>+</span></div><strong>{query ? 'No matching files' : 'Your file space is empty'}</strong><p>{query ? 'Try another name or clear your search.' : 'Upload your first file and it will be stored securely here.'}</p>{!query && <button className="button button-secondary" onClick={() => fileInput.current?.click()}><Icon name="upload" size={16}/> Choose files</button>}</div></td></tr>}
+              {loadingFiles ? <tr><td colSpan={5}><div className="table-state"><span className="spinner"></span> Loading files…</div></td></tr> : files.length ? files.map((file) => <tr key={file.id}><td><div className="table-file"><FileGlyph extension={file.extension}/><strong title={file.originalName}>{file.originalName}</strong></div></td><td><span className="type-pill">{file.extension}</span></td><td>{formatBytes(file.fileSize)}</td><td>{formatDate(file.uploadedAt)}</td><td><div className="row-actions"><a className="icon-button" href={`/api/files/${file.id}/download`} title="Download" aria-label={`Download ${file.originalName}`}><Icon name="download" size={16}/></a><button className="icon-button" onClick={() => void togglePublic(file)} title={file.isPublic ? 'Unpublish file' : 'Publish file'} aria-label={file.isPublic ? 'Unpublish file' : 'Publish file'} style={{ color: file.isPublic ? '#65c99a' : '#a8b8ae', fontSize: 11, width: 'auto', padding: '0 8px' }}>{file.isPublic ? 'PUBLIC' : 'PRIVATE'}</button><button className="icon-button danger-action" onClick={() => setDeleteTarget(file)} title="Delete" aria-label={`Delete ${file.originalName}`}><Icon name="trash" size={16}/></button></div></td></tr>) : <tr><td colSpan={5}><div className="table-empty"><div className="empty-art compact-art"><div><Icon name="folder" size={20}/></div><span>+</span></div><strong>{query ? 'No matching files' : 'Your file space is empty'}</strong><p>{query ? 'Try another name or clear your search.' : 'Upload your first file and it will be stored securely here.'}</p>{!query && <button className="button button-secondary" onClick={() => fileInput.current?.click()}><Icon name="upload" size={16}/> Choose files</button>}</div></td></tr>}
             </tbody></table></div>
             <div className="file-table-footer"><span>Showing <strong>{fileTotal ? `${(page - 1) * 50 + 1}–${(page - 1) * 50 + files.length}` : '0'}</strong> of <strong>{fileTotal}</strong> files{query ? ` matching “${query}”` : ''}</span><div className="pagination"><button className="button button-secondary" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page} of {Math.max(1, Math.ceil(fileTotal / 50))}</span><button className="button button-secondary" disabled={page >= Math.ceil(fileTotal / 50)} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>
           </section>

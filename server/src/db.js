@@ -36,6 +36,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS files_name_idx ON files(original_name COLLATE NOCASE);
 `);
 
+const fileColumns = db.pragma('table_info(files)');
+if (!fileColumns.some((column) => column.name === 'is_public')) {
+  db.exec('ALTER TABLE files ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK (is_public IN (0, 1))');
+}
+db.exec('CREATE INDEX IF NOT EXISTS files_public_uploaded_at_idx ON files(is_public, uploaded_at DESC)');
+
 export function closeDatabase() {
   if (db.open) db.close();
 }

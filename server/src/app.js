@@ -147,7 +147,7 @@ function readStats() {
   const formats = db.prepare(`SELECT extension, COUNT(*) AS count, COALESCE(SUM(file_size), 0) AS bytes
     FROM files GROUP BY extension ORDER BY count DESC, extension ASC LIMIT 8`).all();
   const recent = db.prepare(`SELECT id, original_name AS originalName, extension, mime_type AS mimeType,
-    file_size AS fileSize, uploaded_at AS uploadedAt FROM files ORDER BY uploaded_at DESC LIMIT 5`).all();
+    file_size AS fileSize, uploaded_at AS uploadedAt, is_public AS isPublic FROM files ORDER BY uploaded_at DESC LIMIT 5`).all();
   return {
     ...summary,
     maxStorageBytes: config.maxStorageBytes,
@@ -167,6 +167,7 @@ function mapFile(row) {
     mimeType: row.mime_type,
     fileSize: row.file_size,
     uploadedAt: row.uploaded_at,
+  isPublic: Boolean(row.is_public),
   };
 }
 
@@ -190,9 +191,9 @@ app.get('/api/files', requireAdmin, (req, res) => {
     ? db.prepare("SELECT COUNT(*) AS total FROM files WHERE original_name LIKE ? ESCAPE '\\'").get(search).total
     : db.prepare('SELECT COUNT(*) AS total FROM files').get().total;
   const rows = q
-    ? db.prepare(`SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE original_name LIKE ? ESCAPE '\\' ORDER BY ${sortColumns[sortBy]} ${direction} LIMIT ? OFFSET ?`)
+    ? db.prepare(`SELECT id, original_name, extension, mime_type, file_size, uploaded_at, is_public FROM files WHERE original_name LIKE ? ESCAPE '\\' ORDER BY ${sortColumns[sortBy]} ${direction} LIMIT ? OFFSET ?`)
       .all(search, pageSize, offset)
-    : db.prepare(`SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files ORDER BY ${sortColumns[sortBy]} ${direction} LIMIT ? OFFSET ?`).all(pageSize, offset);
+    : db.prepare(`SELECT id, original_name, extension, mime_type, file_size, uploaded_at, is_public FROM files ORDER BY ${sortColumns[sortBy]} ${direction} LIMIT ? OFFSET ?`).all(pageSize, offset);
   res.json({ files: rows.map(mapFile), total, page, pageSize });
 });
 
@@ -212,6 +213,51 @@ function safeStoragePath(row) {
   return resolved;
 }
 
+// Public visitors can only see files explicitly published by an administrator.
+app.get('/api/public/files', (req, res) => {
+  const rows = db.prepare(`
+    SELECT id, original_name, extension, mime_type, file_size, uploaded_at, is_public
+    FROM files
+    WHERE is_public = 1
+    ORDER BY uploaded_at DESC
+    LIMIT 200
+  `).all();
+
+  res.set('Cache-Control', 'no-store').json({ files: rows.map(mapFile) });
+});
+
+app.get('/api/public/files/:id/download', (req, res, next) => {
+  if (!idPattern.test(req.params.id)) {
+    return res.status(404).json({ error: 'File not found.' });
+  }
+
+  const row = db.prepare(
+    'SELECT * FROM files WHERE id = ? AND is_public = 1'
+  ).get(req.params.id);
+
+  if (!row) return res.status(404).json({ error: 'File not found.' });
+
+  const storagePath = safeStoragePath(row);
+  if (!storagePath || !fs.existsSync(storagePath)) {
+    return res.status(404).json({ error: 'File content is unavailable.' });
+  }
+
+  res.set({
+    'Content-Type': 'application/octet-stream',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store',
+  });
+
+  res.download(storagePath, row.original_name, {
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  }, (error) => {
+    if (error && !res.headersSent) next(error);
+  });
+});
+
 app.get('/api/files/:id', requireAdmin, findFile, (req, res) => {
   res.json({ file: mapFile(req.fileRecord) });
 });
@@ -227,6 +273,18 @@ app.get('/api/files/:id/download', requireAdmin, findFile, (req, res, next) => {
   res.download(storagePath, req.fileRecord.original_name, { headers: { 'Content-Type': 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' } }, (error) => {
     if (error && !res.headersSent) next(error);
   });
+});
+
+app.patch('/api/files/:id/public', requireAdmin, requireCsrf, findFile, (req, res) => {
+  if (typeof req.body?.isPublic !== 'boolean') {
+    return res.status(400).json({ error: 'A valid publication status is required.' });
+  }
+
+  db.prepare('UPDATE files SET is_public = ? WHERE id = ?')
+    .run(req.body.isPublic ? 1 : 0, req.fileRecord.id);
+
+  const updated = db.prepare('SELECT * FROM files WHERE id = ?').get(req.fileRecord.id);
+  res.set('Cache-Control', 'no-store').json({ file: mapFile(updated) });
 });
 
 app.delete('/api/files/:id', requireAdmin, requireCsrf, findFile, (req, res, next) => {
