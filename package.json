@@ -1,0 +1,18 @@
+{
+  "name": "scar-files",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Private, admin-only file management for SCAR DRONE",
+  "workspaces": ["server", "client"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c green,cyan \"npm:dev --workspace server\" \"npm:dev --workspace client\"",
+    "build": "npm run build --workspace client",
+    "start": "npm start --workspace server",
+    "admin:create": "npm run admin:create --workspace server",
+    "test": "npm test --workspace server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

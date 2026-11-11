@@ -1,0 +1,23 @@
+[Unit]
+Description=SCAR FILES private file management API
+After=network.target
+
+[Service]
+Type=simple
+User=scarfiles
+Group=scarfiles
+WorkingDirectory=/var/www/scardrone-files
+EnvironmentFile=/etc/scardrone-files.env
+ExecStart=/usr/bin/env npm start --workspace server
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/scardrone-files
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
