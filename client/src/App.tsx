@@ -581,7 +581,7 @@ function App() {
   if (booting) return <div className="loading-screen"><Logo/><span className="spinner"></span></div>;
   const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin';
 
-  const currentPath = window.location.pathname.replace(/\\/+$/, '') || '/';
+  const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
   if (!isAdminRoute && ['/account', '/register', '/workspace'].includes(currentPath)) return <UserPortal />;
   if (!isAdminRoute) return <GuestFiles />;
   if (!admin) return <Login onLogin={handleLogin} />;
