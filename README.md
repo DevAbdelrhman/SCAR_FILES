@@ -64,14 +64,17 @@ Admin file and dashboard endpoints require an authenticated administrator. User 
 | `POST` | `/api/user/auth/register` | Create a standard user account (never an admin) |
 | `POST` | `/api/user/auth/login` | Sign in with `{ "identity", "password" }` |
 | `POST` | `/api/user/auth/logout` | End the user session |
+| `POST` | `/api/user/auth/change-password` | Change password and revoke other user sessions |
+| `DELETE` | `/api/user/auth/account` | Permanently delete the signed-in user's account and owned files (password confirmation required) |
 | `GET` | `/api/user/auth/me` | Get the current user |
 | `GET` | `/api/user/dashboard` | Personal storage usage and recent files |
 | `GET` | `/api/user/files` | List only the signed-in user's files |
 | `POST` | `/api/user/files/upload` | Upload private personal files |
 | `GET` | `/api/user/files/:id/download` | Download an owned file |
 | `DELETE` | `/api/user/files/:id` | Delete an owned file |
-| `GET` | `/api/admin/users` | Admin-only user list and usage |
+| `GET` | `/api/admin/users?q=...` | Admin-only searchable user directory and usage |
 | `PATCH` | `/api/admin/users/:id/status` | Admin-only account suspension/reactivation |
+| `DELETE` | `/api/admin/users/:id` | Admin-only account and owned-file deletion |
 | `GET` | `/api/dashboard/stats` | Storage, formats, and recent file statistics |
 | `GET` | `/api/files?q=&sort=&direction=&page=&pageSize=` | Search and list files (50 per page by default; up to 100) |
 | `POST` | `/api/files/upload` | Upload multipart fields named `files` |
@@ -137,7 +140,9 @@ To update, copy the new release to the app directory and rerun `scripts/install-
 - Public registration creates only standard user accounts. Administrator accounts must still be created from the server using `npm run admin:create --workspace server`.
 - User uploads are private by default and are isolated by database ownership checks. Only an administrator can publish a file to the guest library.
 - Suspending a user prevents further user API access and invalidates the account session on its next request.
+- Password changes increment the user's session version, revoking all other active sessions. Account deletion requires password confirmation and removes the user's owned files from disk.
 - Each user has a 5 GiB personal quota, additionally bounded by the configured global storage limit.
+- Password recovery by email and email-address verification require a configured transactional email provider; they are not enabled in this deployment yet. Users can change passwords while signed in, and administrators can suspend/reactivate accounts.
 - Uploaded names are metadata only. Disk names are random UUIDs, storage is not served by Nginx, and downloads force `application/octet-stream`, attachment disposition, and `nosniff`.
 - Production session cookies are HTTP-only, Secure, and SameSite Lax. Express trusts one Nginx proxy hop for HTTPS detection.
 - The Nginx proxy caps request bodies, disables request buffering for large uploads, and sends the original scheme and client address to Express.
