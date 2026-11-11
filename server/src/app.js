@@ -224,7 +224,13 @@ app.get('/api/user/files', requireUser, (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 160) : '';
   const page = Math.max(1, Math.min(100000, Number.parseInt(req.query.page, 10) || 1));
   const pageSize = 50;
-  const search = q ? `%${q.replace(/[\\\\%_]/g, '\\\\app.get('/api/auth/me', requireAdmin, (req, res) => {
+  const search = q || null;
+  const count = search
+    ? db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0').get(req.user.id, search).total
+    : db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ?').get(req.user.id).total;
+  const rows = search
+    ? db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0 ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, search, pageSize, (page - 1) * pageSize)
+    : db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, pageSize, (page - 1) * pageSize);
   res.set('Cache-Control', 'no-store').json({ admin: { username: req.admin.username } });
 });
 ')}%` : null;
