@@ -248,12 +248,11 @@ app.delete('/api/user/auth/account', requireUser, requireCsrf, async (req, res, 
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
     const account = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
     if (!password || !await bcrypt.compare(password, account.password_hash)) return res.status(403).json({ error: 'Password confirmation failed.' });
-    const owned = db.prepare('SELECT storage_path, id FROM files WHERE user_id = ?').all(req.user.id);
+    const owned = db.prepare('SELECT storage_path, stored_name FROM files WHERE user_id = ?').all(req.user.id);
     const removeAccount = db.transaction(() => db.prepare('DELETE FROM users WHERE id = ?').run(req.user.id));
     removeAccount();
     for (const file of owned) {
-      const row = { storage_path: file.storage_path };
-      const fullPath = safeStoragePath(row);
+      const fullPath = safeStoragePath(file);
       if (fullPath) fs.rmSync(fullPath, { force: true });
     }
     req.session.destroy(error => {
@@ -325,12 +324,12 @@ app.delete('/api/admin/users/:id', requireAdmin, requireCsrf, (req, res, next) =
   const id = Number(req.params.id);
   if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid user id.' });
   try {
-    const owned = db.prepare('SELECT storage_path FROM files WHERE user_id = ?').all(id);
+    const owned = db.prepare('SELECT storage_path, stored_name FROM files WHERE user_id = ?').all(id);
     const removeAccount = db.transaction(() => db.prepare('DELETE FROM users WHERE id = ?').run(id));
     const result = removeAccount();
     if (!result.changes) return res.status(404).json({ error: 'User not found.' });
     for (const file of owned) {
-      const fullPath = safeStoragePath({ storage_path: file.storage_path });
+      const fullPath = safeStoragePath(file);
       if (fullPath) fs.rmSync(fullPath, { force: true });
     }
     res.status(204).end();
