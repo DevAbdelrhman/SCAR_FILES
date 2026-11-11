@@ -21,6 +21,17 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
+
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'disabled')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+
   CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     original_name TEXT NOT NULL,
@@ -32,9 +43,17 @@ db.exec(`
     uploaded_at TEXT NOT NULL
   );
 
+
   CREATE INDEX IF NOT EXISTS files_uploaded_at_idx ON files(uploaded_at DESC);
   CREATE INDEX IF NOT EXISTS files_name_idx ON files(original_name COLLATE NOCASE);
+ ON files(uploaded_at DESC);
+  CREATE INDEX IF NOT EXISTS files_name_idx ON files(original_name COLLATE NOCASE);
 `);
+
+const fileColumns = new Set(db.prepare('PRAGMA table_info(files)').all().map((column) => column.name));
+if (!fileColumns.has('is_public')) db.exec('ALTER TABLE files ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK (is_public IN (0, 1))');
+if (!fileColumns.has('owner_user_id')) db.exec('ALTER TABLE files ADD COLUMN owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
+db.exec('CREATE INDEX IF NOT EXISTS files_visibility_owner_idx ON files(is_public, owner_user_id, uploaded_at DESC)');
 
 export function closeDatabase() {
   if (db.open) db.close();
