@@ -1,13 +1,16 @@
 # SCAR FILES
 
-SCAR FILES is a private, administrator-only file library for `files.scardrone.cc`. The frontend is React, Vite, TypeScript, and Tailwind CSS. The API uses Express, SQLite, bcrypt password hashes, server-side sessions, and private disk storage.
+SCAR FILES is a secure file portal for `files.scardrone.cc`, with public guest downloads, personal user workspaces, and administrator management. The frontend is React, Vite, TypeScript, and Tailwind CSS. The API uses Express, SQLite, bcrypt password hashes, server-side sessions, and private disk storage.
 
 ## Features
 
-- Admin sign-in with bcrypt verification, HTTP-only session cookies, CSRF tokens, login rate limiting, and no public registration.
+- Guest access to administrator-published public files without an account.
+- User registration and sign-in with bcrypt verification, HTTP-only session cookies, CSRF tokens, and rate limiting.
+- Private personal workspaces with ownership-enforced upload, listing, download, deletion, and a 5 GiB per-user storage quota.
+- Admin sign-in with bcrypt verification, HTTP-only session cookies, CSRF tokens, login rate limiting, and a separate administrator role.
 - Multi-file uploads for any extension. Uploads receive random internal names, remain outside the web root, and are always downloaded as attachments.
 - Configurable per-file, per-batch, file-count, and total-storage limits.
-- Search, sorting, metadata, storage and format statistics, downloads, and confirmed deletion.
+- Admin search, sorting, metadata, storage and format statistics, downloads, confirmed deletion, and user suspension/reactivation.
 - SQLite prepared statements, persistent SQLite sessions, a responsive dashboard, and deployment materials for an independent Nginx site.
 
 ## Local development
@@ -50,7 +53,7 @@ The API does not trust file extensions or client MIME types for execution or ren
 
 ## API
 
-All file and dashboard endpoints require an authenticated administrator. Login, logout, uploads, and deletion also require the session CSRF token in `X-CSRF-Token`. Obtain it from `GET /api/auth/csrf`; a successful login returns the replacement token for the authenticated session.
+Admin file and dashboard endpoints require an authenticated administrator. User workspace endpoints require an authenticated user and enforce file ownership. Login, registration, logout, uploads, deletion, and publication changes also require the session CSRF token in `X-CSRF-Token`. Obtain it from `GET /api/auth/csrf`; successful authentication returns the replacement token for the new session.
 
 | Method | Route | Description |
 | --- | --- | --- |
@@ -58,6 +61,17 @@ All file and dashboard endpoints require an authenticated administrator. Login, 
 | `POST` | `/api/auth/login` | Sign in with `{ "username", "password" }` |
 | `POST` | `/api/auth/logout` | Destroy the current session |
 | `GET` | `/api/auth/me` | Get the current administrator |
+| `POST` | `/api/user/auth/register` | Create a standard user account (never an admin) |
+| `POST` | `/api/user/auth/login` | Sign in with `{ "identity", "password" }` |
+| `POST` | `/api/user/auth/logout` | End the user session |
+| `GET` | `/api/user/auth/me` | Get the current user |
+| `GET` | `/api/user/dashboard` | Personal storage usage and recent files |
+| `GET` | `/api/user/files` | List only the signed-in user's files |
+| `POST` | `/api/user/files/upload` | Upload private personal files |
+| `GET` | `/api/user/files/:id/download` | Download an owned file |
+| `DELETE` | `/api/user/files/:id` | Delete an owned file |
+| `GET` | `/api/admin/users` | Admin-only user list and usage |
+| `PATCH` | `/api/admin/users/:id/status` | Admin-only account suspension/reactivation |
 | `GET` | `/api/dashboard/stats` | Storage, formats, and recent file statistics |
 | `GET` | `/api/files?q=&sort=&direction=&page=&pageSize=` | Search and list files (50 per page by default; up to 100) |
 | `POST` | `/api/files/upload` | Upload multipart fields named `files` |
@@ -120,7 +134,10 @@ To update, copy the new release to the app directory and rerun `scripts/install-
 
 ## Security notes
 
-- There is no browser-based registration route. Create administrators from the server using `npm run admin:create --workspace server`.
+- Public registration creates only standard user accounts. Administrator accounts must still be created from the server using `npm run admin:create --workspace server`.
+- User uploads are private by default and are isolated by database ownership checks. Only an administrator can publish a file to the guest library.
+- Suspending a user prevents further user API access and invalidates the account session on its next request.
+- Each user has a 5 GiB personal quota, additionally bounded by the configured global storage limit.
 - Uploaded names are metadata only. Disk names are random UUIDs, storage is not served by Nginx, and downloads force `application/octet-stream`, attachment disposition, and `nosniff`.
 - Production session cookies are HTTP-only, Secure, and SameSite Lax. Express trusts one Nginx proxy hop for HTTPS detection.
 - The Nginx proxy caps request bodies, disables request buffering for large uploads, and sends the original scheme and client address to Express.
