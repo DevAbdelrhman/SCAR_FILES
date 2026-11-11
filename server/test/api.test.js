@@ -174,6 +174,6 @@ test('user registration, private workspace, ownership isolation, and admin moder
 
   const afterDelete = await agent.get('/api/admin/users').expect(200);
   const targetAfter = afterDelete.body.users.find(user => user.username === 'anotheruser');
-  await agent.delete('/api/admin/users/' + targetAfter.id).set('X-CSRF-Token', changed.body.csrfToken).expect(204);
+  await agent.delete('/api/admin/users/' + targetAfter.id).set('X-CSRF-Token', adminLogin.body.csrfToken).expect(204);
   await agent.get('/api/admin/users').expect(200).expect(({ body }) => assert.equal(body.users.length, 0));
 });
