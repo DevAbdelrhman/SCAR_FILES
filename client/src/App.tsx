@@ -282,6 +282,9 @@ function UserPortal() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [selected, setSelected] = useState<FileList | null>(null);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
 
   const api = async <T,>(response: Response) => readJson<T>(response);
   const refresh = useCallback(async () => {
@@ -350,6 +353,36 @@ function UserPortal() {
     finally { setBusy(false); }
   }
 
+  async function changePassword(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(''); setNotice('');
+    try {
+      const result = await api<{ csrfToken: string }>(await fetch('/api/user/auth/change-password', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      }));
+      setCsrf(result.csrfToken); setCurrentPassword(''); setNewPassword('');
+      setNotice('Password changed successfully. Other sessions have been signed out.');
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not change password.'); }
+    finally { setBusy(false); }
+  }
+
+  async function deleteAccount(event: FormEvent) {
+    event.preventDefault();
+    if (!window.confirm('Permanently delete your account and every file in your private workspace? This cannot be undone.')) return;
+    setBusy(true); setError('');
+    try {
+      const response = await fetch('/api/user/auth/account', {
+        method: 'DELETE', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ password: deletePassword }),
+      });
+      if (!response.ok) throw new Error((await response.json() as ApiError).error || 'Could not delete account.');
+      setUser(null); setFiles([]); setDeletePassword('');
+      const token = await api<{ csrfToken: string }>(await fetch('/api/auth/csrf', { credentials: 'same-origin' }));
+      setCsrf(token.csrfToken); setNotice('Your account and personal files have been deleted.');
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not delete account.'); }
+    finally { setBusy(false); }
+  }
+
   async function signOut() {
     setBusy(true);
     try {
@@ -384,6 +417,19 @@ function UserPortal() {
       <section className="user-upload-card"><div><strong>Upload to your private space</strong><p>Files are private by default and never appear in the public library.</p></div><input type="file" multiple onChange={e => setSelected(e.target.files)} /><button className="button button-primary" onClick={uploadFiles} disabled={busy || !selected?.length}><Icon name="upload" size={16}/> Upload files</button></section>
       <section className="user-files-card"><div className="user-files-heading"><div><h2>Your files</h2><p>{files.length} files in your workspace</p></div><button onClick={() => void refresh()} disabled={busy}>Refresh</button></div>
         {files.length ? <div className="user-files-list">{files.map(file => <article key={file.id}><FileGlyph extension={file.extension}/><div><strong title={file.originalName}>{file.originalName}</strong><span>{formatBytes(file.fileSize)} · {formatDate(file.uploadedAt)}</span></div><a href={`/api/user/files/${encodeURIComponent(file.id)}/download`}><Icon name="download" size={17}/> Download</a><button onClick={() => void removeFile(file)} disabled={busy} aria-label={`Delete ${file.originalName}`}><Icon name="trash" size={17}/></button></article>)}</div> : <div className="user-files-empty"><Icon name="folder" size={26}/><strong>Your workspace is empty</strong><span>Upload your first file to get started.</span></div>}
+      </section>
+      <section className="user-account-settings">
+        <div><h2>Account security</h2><p>Update your password or permanently close your account.</p></div>
+        <form onSubmit={changePassword} className="user-security-form">
+          <label htmlFor="current-password">Current password</label><input id="current-password" type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} autoComplete="current-password" required/>
+          <label htmlFor="new-password">New password</label><input id="new-password" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} minLength={10} maxLength={72} autoComplete="new-password" required/>
+          <button className="button button-secondary" disabled={busy}>Change password</button>
+        </form>
+        <form onSubmit={deleteAccount} className="user-delete-form">
+          <div><strong>Delete account</strong><span>This permanently removes your account and all files you own.</span></div>
+          <input aria-label="Confirm password to delete account" type="password" value={deletePassword} onChange={e => setDeletePassword(e.target.value)} placeholder="Confirm your password" autoComplete="current-password" required/>
+          <button className="button button-danger" disabled={busy}>Delete my account</button>
+        </form>
       </section>
     </section>}
     <footer className="user-portal-footer">SCAR DRONE · FILE PORTAL <span>Secure personal storage</span></footer>
@@ -449,6 +495,16 @@ function App() {
       setToast(status === 'suspended' ? 'User account suspended' : 'User account reactivated');
       await loadAdminUsers();
     } catch (err) { setError(err instanceof Error ? err.message : 'Could not update user.'); }
+  }
+
+  async function deleteAdminUser(user: UserAccount) {
+    if (!window.confirm('Permanently delete ' + user.username + ' and all files in their workspace?')) return;
+    try {
+      const response = await fetch('/api/admin/users/' + user.id, { method: 'DELETE', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrfToken } });
+      if (!response.ok) throw new Error((await response.json() as ApiError).error || 'Could not delete user.');
+      setToast('User account and owned files deleted');
+      await Promise.all([loadAdminUsers(), loadStats()]);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not delete user.'); }
   }
 
   useEffect(() => {
@@ -654,7 +710,7 @@ function App() {
                 <div className="admin-user-identity"><strong>{user.username}</strong><span>{user.email}</span></div>
                 <div className="admin-user-meta"><strong>{user.totalFiles} files</strong><span>{formatBytes(user.storageUsed)}</span></div>
                 <span className={user.status === 'active' ? 'admin-user-status active' : 'admin-user-status suspended'}>{user.status}</span>
-                <button className="button button-secondary" onClick={() => void updateUserStatus(user, user.status === 'active' ? 'suspended' : 'active')}>{user.status === 'active' ? 'Suspend' : 'Reactivate'}</button>
+                <button className="button button-secondary" onClick={() => void updateUserStatus(user, user.status === 'active' ? 'suspended' : 'active')}>{user.status === 'active' ? 'Suspend' : 'Reactivate'}</button><button className="button button-danger" onClick={() => void deleteAdminUser(user)}>Delete</button>
               </article>) : <div className="table-empty"><strong>No user accounts yet</strong><p>New registrations will appear here.</p></div>}
             </div>
           </section>
