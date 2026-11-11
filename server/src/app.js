@@ -94,11 +94,12 @@ function requireAdmin(req, res, next) {
 function requireUser(req, res, next) {
   const userId = req.session?.userId;
   if (!userId || req.session?.adminId) return res.status(401).json({ error: 'User authentication required.' });
-  const user = db.prepare("SELECT id, username, email, status, created_at AS createdAt FROM users WHERE id = ?").get(userId);
-  if (!user || user.status !== 'active') {
+  const user = db.prepare("SELECT id, username, email, status, session_version, created_at AS createdAt FROM users WHERE id = ?").get(userId);
+  if (!user || user.status !== 'active' || req.session.userVersion !== user.session_version) {
     return req.session.destroy(() => res.status(401).json({ error: 'Your account is unavailable. Contact support.' }));
   }
-  req.user = user;
+  const { session_version: _sessionVersion, ...publicUser } = user;
+  req.user = publicUser;
   next();
 }
 
@@ -172,6 +173,7 @@ app.post('/api/user/auth/register', registerLimiter, requireCsrf, async (req, re
     req.session.regenerate(async (error) => {
       if (error) return next(error);
       req.session.userId = Number(result.lastInsertRowid);
+      req.session.userVersion = 0;
       req.session.csrfToken = await csrfToken();
       req.session.save((saveError) => {
         if (saveError) return next(saveError);
@@ -189,13 +191,14 @@ app.post('/api/user/auth/login', loginLimiter, requireCsrf, async (req, res, nex
     const identity = typeof req.body?.identity === 'string' ? req.body.identity.trim() : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
     if (!identity || identity.length > 254 || !password || Buffer.byteLength(password, 'utf8') > 72) return res.status(400).json({ error: 'Enter your username/email and password.' });
-    const user = db.prepare('SELECT id, username, email, password_hash, status FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE').get(identity, identity);
+    const user = db.prepare('SELECT id, username, email, password_hash, status, session_version FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE').get(identity, identity);
     const matches = await bcrypt.compare(password, user?.password_hash || dummyPasswordHash);
     if (!user || !matches) return res.status(401).json({ error: 'The email/username or password is incorrect.' });
     if (user.status !== 'active') return res.status(403).json({ error: 'This account is suspended. Contact SCAR support.' });
     req.session.regenerate(async (error) => {
       if (error) return next(error);
       req.session.userId = user.id;
+      req.session.userVersion = user.session_version;
       req.session.csrfToken = await csrfToken();
       req.session.save((saveError) => {
         if (saveError) return next(saveError);
@@ -225,10 +228,12 @@ app.post('/api/user/auth/change-password', passwordChangeLimiter, requireUser, r
     const account = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
     if (!await bcrypt.compare(currentPassword, account.password_hash)) return res.status( currentPassword ? 403 : 400).json({ error: 'Your current password is incorrect.' });
     const hash = await bcrypt.hash(newPassword, 12);
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.user.id);
+    db.prepare('UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?').run(hash, req.user.id);
+    const nextVersion = db.prepare('SELECT session_version FROM users WHERE id = ?').get(req.user.id).session_version;
     req.session.regenerate(async error => {
       if (error) return next(error);
       req.session.userId = req.user.id;
+      req.session.userVersion = nextVersion;
       req.session.csrfToken = await csrfToken();
       req.session.save(saveError => {
         if (saveError) return next(saveError);
