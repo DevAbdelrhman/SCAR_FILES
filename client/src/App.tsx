@@ -450,6 +450,7 @@ function App() {
   const [page, setPage] = useState(1);
   const [fileTotal, setFileTotal] = useState(0);
   const [adminUsers, setAdminUsers] = useState<(UserAccount & { totalFiles: number; storageUsed: number })[]>([]);
+  const [adminUserQuery, setAdminUserQuery] = useState('');
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -478,11 +479,12 @@ function App() {
   }, [loadStats, loadFiles]);
 
   const loadAdminUsers = useCallback(async () => {
+    const params = new URLSearchParams({ q: adminUserQuery });
     const result = await readJson<{ users: (UserAccount & { totalFiles: number; storageUsed: number })[] }>(
-      await fetch('/api/admin/users', { credentials: 'same-origin', cache: 'no-store' })
+      await fetch('/api/admin/users?' + params, { credentials: 'same-origin', cache: 'no-store' })
     );
     setAdminUsers(result.users);
-  }, []);
+  }, [adminUserQuery]);
 
   async function updateUserStatus(user: UserAccount, status: 'active' | 'suspended') {
     try {
@@ -530,7 +532,8 @@ function App() {
 
   useEffect(() => {
     if (!admin || view !== 'users') return;
-    loadAdminUsers().catch(err => setError(err instanceof Error ? err.message : 'Could not load users.'));
+    const timer = window.setTimeout(() => { loadAdminUsers().catch(err => setError(err instanceof Error ? err.message : 'Could not load users.')); }, 180);
+    return () => window.clearTimeout(timer);
   }, [admin, view, loadAdminUsers]);
 
   useEffect(() => {
@@ -703,11 +706,11 @@ function App() {
         </> : view === 'users' ? <>
           <section className="file-page-heading"><div><div className="eyebrow"><span className="eyebrow-line"></span> ADMINISTRATION</div><h1>User accounts</h1><p>Review registrations and control access to personal workspaces.</p></div><button className="button button-secondary" onClick={() => void loadAdminUsers()}><Icon name="arrow" size={15}/> Refresh</button></section>
           <section className="panel files-panel admin-users-panel">
-            <div className="files-toolbar"><div><h2>Registered users <span className="count-chip">{adminUsers.length}</span></h2><p>Users can only manage their own private files.</p></div></div>
+            <div className="files-toolbar"><div><h2>Registered users <span className="count-chip">{adminUsers.length}</span></h2><p>Users can only manage their own private files.</p></div><div className="admin-user-search"><Icon name="search" size={16}/><input aria-label="Search users" placeholder="Search username or email" value={adminUserQuery} onChange={event => setAdminUserQuery(event.target.value)}/></div></div>
             <div className="admin-users-list">
               {adminUsers.length ? adminUsers.map(user => <article key={user.id}>
                 <div className="profile-avatar">{user.username.slice(0,1).toUpperCase()}</div>
-                <div className="admin-user-identity"><strong>{user.username}</strong><span>{user.email}</span></div>
+                <div className="admin-user-identity"><strong>{user.username}</strong><span>{user.email}</span>{user.createdAt && <small>Joined {formatDate(user.createdAt)}</small>}</div>
                 <div className="admin-user-meta"><strong>{user.totalFiles} files</strong><span>{formatBytes(user.storageUsed)}</span></div>
                 <span className={user.status === 'active' ? 'admin-user-status active' : 'admin-user-status suspended'}>{user.status}</span>
                 <button className="button button-secondary" onClick={() => void updateUserStatus(user, user.status === 'active' ? 'suspended' : 'active')}>{user.status === 'active' ? 'Suspend' : 'Reactivate'}</button><button className="button button-danger" onClick={() => void deleteAdminUser(user)}>Delete</button>
