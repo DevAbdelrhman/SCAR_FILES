@@ -155,12 +155,18 @@ test('user registration, private workspace, ownership isolation, and admin moder
   await second.post('/api/user/auth/login').set('X-CSRF-Token', (await second.get('/api/auth/csrf')).body.csrfToken)
     .send({ identity: 'anotheruser', password: 'long-secure-pass-2' }).expect(403);
 
+  const otherSession = request.agent(app);
+  const otherCsrf = (await otherSession.get('/api/auth/csrf')).body.csrfToken;
+  await otherSession.post('/api/user/auth/login').set('X-CSRF-Token', otherCsrf)
+    .send({ identity: 'privateuser', password: 'long-secure-pass-1' }).expect(200);
+
   const firstToken = (await first.get('/api/auth/csrf')).body.csrfToken;
   await first.post('/api/user/auth/change-password').set('X-CSRF-Token', firstToken)
     .send({ currentPassword: 'wrong-password', newPassword: 'new-secure-password-3' }).expect(403);
   const changed = await first.post('/api/user/auth/change-password').set('X-CSRF-Token', firstToken)
     .send({ currentPassword: 'long-secure-pass-1', newPassword: 'new-secure-password-3' }).expect(200);
   assert.equal(typeof changed.body.csrfToken, 'string');
+  await otherSession.get('/api/user/auth/me').expect(401);
   await first.post('/api/user/auth/login').set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
     .send({ identity: 'privateuser', password: 'long-secure-pass-1' }).expect(401);
   await first.post('/api/user/auth/login').set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
