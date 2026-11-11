@@ -3112,3 +3112,21 @@ h1, h2, p { margin-top: 0; }
   .user-files-list article>a svg { width:17px; height:17px; }
   .user-portal-footer { flex-direction:column; }
 }
+
+.admin-users-list { padding:0 18px 12px; }
+.admin-users-list article { display:flex; align-items:center; gap:14px; min-height:68px; border-top:1px solid rgba(193,216,197,.07); }
+.admin-user-identity { display:grid; gap:4px; min-width:0; flex:1; }
+.admin-user-identity strong { color:#dce6dd; font-size:11px; }
+.admin-user-identity span,.admin-user-meta span { overflow:hidden; color:#758278; font-size:10px; text-overflow:ellipsis; }
+.admin-user-meta { display:grid; gap:4px; min-width:90px; }
+.admin-user-meta strong { color:#c5d1c6; font-size:10px; }
+.admin-user-status { border-radius:5px; padding:5px 8px; font-family:'DM Mono',monospace; font-size:9px; text-transform:uppercase; }
+.admin-user-status.active { color:#a6dca8; background:rgba(57,255,20,.07); }
+.admin-user-status.suspended { color:#e4a49e; background:rgba(218,79,69,.1); }
+@media(max-width:640px) {
+ .admin-users-list { padding:0 12px 10px; }
+ .admin-users-list article { flex-wrap:wrap; gap:9px; padding:13px 0; }
+ .admin-user-identity { min-width:calc(100% - 60px); }
+ .admin-user-meta { margin-left:43px; }
+ .admin-users-list article>.button { margin-left:auto; }
+}
