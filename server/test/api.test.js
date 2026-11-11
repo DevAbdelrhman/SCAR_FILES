@@ -109,3 +109,49 @@ test('authentication, dashboard, file lifecycle, and logout API', async () => {
   await agent.post('/api/auth/logout').set('X-CSRF-Token', csrfToken).expect(204);
   await agent.get('/api/auth/me').expect(401);
 });
+
+
+test('user registration, private workspace, ownership isolation, and admin moderation', async () => {
+  const first = request.agent(app);
+  const firstCsrf = (await first.get('/api/auth/csrf').expect(200)).body.csrfToken;
+  await first.post('/api/user/auth/register').set('X-CSRF-Token', firstCsrf)
+    .send({ username: 'privateuser', email: 'private@example.com', password: 'long-secure-pass-1' }).expect(201);
+  const me = await first.get('/api/user/auth/me').expect(200);
+  assert.equal(me.body.user.username, 'privateuser');
+  assert.equal(me.body.user.email, 'private@example.com');
+  await first.get('/api/dashboard/stats').expect(401);
+  await first.get('/api/user/dashboard').expect(200);
+
+  const upload = await first.post('/api/user/files/upload')
+    .set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken)
+    .attach('files', Buffer.from('my private document'), 'private.txt').expect(201);
+  const privateId = upload.body.files[0].id;
+  const ownList = await first.get('/api/user/files').expect(200);
+  assert.equal(ownList.body.total, 1);
+  assert.equal(ownList.body.files[0].isPublic, false);
+  await first.get('/api/public/files').expect(200).expect(({ body }) => assert.equal(body.files.some(file => file.id === privateId), false));
+
+  const second = request.agent(app);
+  const secondCsrf = (await second.get('/api/auth/csrf').expect(200)).body.csrfToken;
+  await second.post('/api/user/auth/register').set('X-CSRF-Token', secondCsrf)
+    .send({ username: 'anotheruser', email: 'another@example.com', password: 'long-secure-pass-2' }).expect(201);
+  await second.get('/api/user/files').expect(200).expect(({ body }) => assert.equal(body.total, 0));
+  await second.get('/api/user/files/' + privateId + '/download').expect(404);
+  await second.delete('/api/user/files/' + privateId).set('X-CSRF-Token', (await second.get('/api/auth/csrf')).body.csrfToken).expect(404);
+
+  await first.get('/api/user/files/' + privateId + '/download').expect(200);
+  await first.delete('/api/user/files/' + privateId).set('X-CSRF-Token', (await first.get('/api/auth/csrf')).body.csrfToken).expect(204);
+  await first.get('/api/user/files').expect(200).expect(({ body }) => assert.equal(body.total, 0));
+
+  const adminCsrf = (await agent.get('/api/auth/csrf').expect(200)).body.csrfToken;
+  const adminLogin = await agent.post('/api/auth/login').set('X-CSRF-Token', adminCsrf)
+    .send({ username: 'operator', password: testPassword }).expect(200);
+  const users = await agent.get('/api/admin/users').expect(200);
+  assert.equal(users.body.users.length, 2);
+  const target = users.body.users.find(user => user.username === 'anotheruser');
+  await agent.patch('/api/admin/users/' + target.id + '/status').set('X-CSRF-Token', adminLogin.body.csrfToken)
+    .send({ status: 'suspended' }).expect(200);
+  await second.get('/api/user/auth/me').expect(401);
+  await second.post('/api/user/auth/login').set('X-CSRF-Token', (await second.get('/api/auth/csrf')).body.csrfToken)
+    .send({ identity: 'anotheruser', password: 'long-secure-pass-2' }).expect(403);
+});
