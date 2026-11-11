@@ -27,6 +27,7 @@ db.exec(`
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended')),
+    session_version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
@@ -46,6 +47,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS files_name_idx ON files(original_name COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS users_created_at_idx ON users(created_at DESC);
 `);
+
+const userColumns = db.pragma('table_info(users)');
+if (!userColumns.some((column) => column.name === 'session_version')) {
+  db.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0');
+}
 
 const fileColumns = db.pragma('table_info(files)');
 if (!fileColumns.some((column) => column.name === 'user_id')) {
