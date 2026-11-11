@@ -550,10 +550,15 @@ app.post('/api/user/files/upload', requireUser, requireCsrf, acquireUpload, pars
     if (!uploaded.length) return res.status(400).json({ error: 'Choose at least one file to upload.' });
     const batchSize = uploaded.reduce((sum, file) => sum + file.size, 0);
     const current = db.prepare('SELECT COALESCE(SUM(file_size), 0) AS bytes FROM files WHERE user_id = ?').get(req.user.id).bytes;
+    const globalCurrent = db.prepare('SELECT COALESCE(SUM(file_size), 0) AS bytes FROM files').get().bytes;
     const userQuota = 5 * 1024 * 1024 * 1024;
     if (current + batchSize > userQuota) {
       uploaded.forEach(file => fs.rmSync(file.path, { force: true }));
       return res.status(413).json({ error: 'Your 5 GB personal storage limit would be exceeded.' });
+    }
+    if (globalCurrent + batchSize > config.maxStorageBytes) {
+      uploaded.forEach(file => fs.rmSync(file.path, { force: true }));
+      return res.status(413).json({ error: 'SCAR storage is currently full. Try again later.' });
     }
     const now = new Date().toISOString();
     const insert = db.prepare(`INSERT INTO files(id, original_name, stored_name, extension, mime_type, file_size, storage_path, uploaded_at, user_id)
