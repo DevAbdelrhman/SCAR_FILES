@@ -224,24 +224,16 @@ app.get('/api/user/files', requireUser, (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 160) : '';
   const page = Math.max(1, Math.min(100000, Number.parseInt(req.query.page, 10) || 1));
   const pageSize = 50;
-  const search = q || null;
-  const count = search
-    ? db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0').get(req.user.id, search).total
+  const count = q
+    ? db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0').get(req.user.id, q).total
     : db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ?').get(req.user.id).total;
-  const rows = search
-    ? db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0 ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, search, pageSize, (page - 1) * pageSize)
+  const rows = q
+    ? db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? AND instr(lower(original_name), lower(?)) > 0 ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, q, pageSize, (page - 1) * pageSize)
     : db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, pageSize, (page - 1) * pageSize);
-  res.set('Cache-Control', 'no-store').json({ admin: { username: req.admin.username } });
-});
-')}%` : null;
-  const where = search ? 'user_id = ? AND original_name LIKE ? ESCAPE \'\\\\\'' : 'user_id = ?';
-  const count = search
-    ? db.prepare("SELECT COUNT(*) AS total FROM files WHERE user_id = ? AND original_name LIKE ? ESCAPE '\\\\'").get(req.user.id, search).total
-    : db.prepare('SELECT COUNT(*) AS total FROM files WHERE user_id = ?').get(req.user.id).total;
-  const rows = search
-    ? db.prepare("SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? AND original_name LIKE ? ESCAPE '\\\\' ORDER BY uploaded_at DESC LIMIT ? OFFSET ?").all(req.user.id, search, pageSize, (page - 1) * pageSize)
-    : db.prepare('SELECT id, original_name, extension, mime_type, file_size, uploaded_at FROM files WHERE user_id = ? ORDER BY uploaded_at DESC LIMIT ? OFFSET ?').all(req.user.id, pageSize, (page - 1) * pageSize);
-  res.set('Cache-Control', 'no-store').json({ files: rows.map(row => ({ id: row.id, originalName: row.original_name, extension: row.extension, mimeType: row.mime_type, fileSize: row.file_size, uploadedAt: row.uploaded_at, isPublic: false })), total: count, page, pageSize });
+  res.set('Cache-Control', 'no-store').json({
+    files: rows.map(row => ({ id: row.id, originalName: row.original_name, extension: row.extension, mimeType: row.mime_type, fileSize: row.file_size, uploadedAt: row.uploaded_at, isPublic: false })),
+    total: count, page, pageSize,
+  });
 });
 
 app.get('/api/user/files/:id/download', requireUser, (req, res, next) => {
